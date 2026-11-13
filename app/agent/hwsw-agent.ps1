@@ -155,6 +155,53 @@ function Get-UsbSignature($List) {
     return (($List | ForEach-Object { $_.pnp_id } | Sort-Object) -join '|')
 }
 
+function Get-EdidInfo([byte[]]$E) {
+    # Rozebere 128bajtovy blok EDID (data, ktera si monitor pamatuje o sobe).
+    if ($E.Length -lt 128) { return $null }
+    $m = ([int]$E[8] -shl 8) -bor [int]$E[9]
+    $maker = ''
+    foreach ($shift in 10, 5, 0) { $maker += [char](64 + (($m -shr $shift) -band 31)) }
+    $model = ''; $serialText = ''
+    foreach ($o in 54, 72, 90, 108) {
+        if ($E[$o] -eq 0 -and $E[$o + 1] -eq 0 -and $E[$o + 2] -eq 0) {
+            $txt = ''
+            foreach ($i in 5..17) { if ($E[$o + $i] -eq 10) { break }; $txt += [char]$E[$o + $i] }
+            if ($E[$o + 3] -eq 252) { $model = $txt.Trim() }
+            if ($E[$o + 3] -eq 255) { $serialText = $txt.Trim() }
+        }
+    }
+    $serialNum = [int64]$E[12] + ([int64]$E[13] * 256) + ([int64]$E[14] * 65536) + ([int64]$E[15] * 16777216)
+    $serial = $serialText
+    if (-not $serial -and $serialNum -gt 0) { $serial = [string]$serialNum }
+    $size = $null
+    if ($E[21] -gt 0 -and $E[22] -gt 0) {
+        $size = [math]::Round([math]::Sqrt([double]$E[21] * $E[21] + [double]$E[22] * $E[22]) / 2.54, 1)
+    }
+    $year = 0
+    if ($E[17] -gt 0) { $year = 1990 + [int]$E[17] }
+    return @{ manufacturer = $maker; model = $model; serial = $serial; year = $year; size_inch = $size
+              product_code = ('{0:X4}' -f (([int]$E[11] -shl 8) -bor [int]$E[10])); connection = '' }
+}
+
+function Get-MonitorsFromRegistry {
+    # Zaloha, kdyz WMI monitory nevrati: EDID primo z registru Windows (bez nutnosti prihlaseneho uzivatele).
+    $list = @()
+    $root = 'HKLM:\SYSTEM\CurrentControlSet\Enum\DISPLAY'
+    foreach ($model in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+        if ($model.PSChildName -match '^(Default_Monitor|MS_)') { continue }
+        foreach ($inst in @(Get-ChildItem $model.PSPath -ErrorAction SilentlyContinue)) {
+            # "Control" existuje jen u prave pripojenych monitoru (stare zaznamy ho nemaji)
+            if (-not (Test-Path (Join-Path $inst.PSPath 'Control'))) { continue }
+            try {
+                $edid = (Get-ItemProperty -Path (Join-Path $inst.PSPath 'Device Parameters') -Name EDID -ErrorAction Stop).EDID
+                $info = Get-EdidInfo ([byte[]]$edid)
+                if ($info) { $list += $info }
+            } catch {}
+        }
+    }
+    return ,$list
+}
+
 function Get-Monitors {
     $list = @()
     $ids = Wmi 'WmiMonitorID' '' 'root\wmi'
@@ -177,6 +224,7 @@ function Get-Monitors {
             size_inch = $size; connection = $connection; product_code = (Decode-Chars $m.ProductCodeID)
         }
     }
+    if ($list.Count -eq 0) { $list = Get-MonitorsFromRegistry }
     return ,$list
 }
 
