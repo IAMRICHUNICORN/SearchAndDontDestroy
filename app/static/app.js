@@ -517,7 +517,9 @@ async function deviceDetail(main, id, viewId) {
   main.append(el('div', { class: 'grid two' },
     el('div', { class: 'card' }, el('h3', null, 'Systém'), kv([
       ['Výrobce', d.manufacturer], ['Model', d.model], ['Sériové číslo', d.serial], ['SKU', sys.sku],
-      ['BIOS', [d.bios_version, sys.bios_date].filter(Boolean).join(' · ')],
+      ['BIOS', [d.bios_version, sys.bios_date].filter(Boolean).join(' · ')], ['Výrobce BIOS', sys.bios_vendor],
+      ['SMBIOS', sys.smbios], ['Zavádění systému', (x.security || {}).boot_mode],
+      ['Základní deska', [sys.board_manufacturer, sys.board_model].filter(Boolean).join(' ')], ['Sériové číslo desky', sys.board_serial],
       ['Operační systém', d.os_name], ['Verze', d.os_version], ['Architektura', os.arch],
       ['Instalace OS', os.install_date], ['Poslední start', os.last_boot],
       ['Procesor', d.cpu], ['Paměť', d.ram_mb ? (d.ram_mb / 1024).toFixed(1).replace('.', ',') + ' GB' : ''],
@@ -552,15 +554,66 @@ async function deviceDetail(main, id, viewId) {
         section('Procesor', simpleTable(['Název', 'Jader', 'Vláken'], (x.cpu || []).map((c) => [c.name, c.cores, c.threads]))),
         section('Paměťové moduly', simpleTable(['Slot', 'Velikost', 'Rychlost', 'Výrobce', 'Označení', 'Sériové číslo'],
           (x.ram_modules || []).map((m) => [m.slot, m.size_mb ? Math.round(m.size_mb / 1024) + ' GB' : '', m.speed ? m.speed + ' MHz' : '', m.manufacturer, m.part, m.serial]))),
-        section('Disky', simpleTable(['Model', 'Sériové číslo', 'Velikost', 'Typ', 'Rozhraní'],
-          (x.disks || []).map((k) => [k.model, k.serial, gb(k.size_gb), k.type, k.interface]))),
+        section('Disky', simpleTable(['Model', 'Sériové číslo', 'Velikost', 'Typ', 'Rozhraní', 'Stav', 'Opotřebení', 'Teplota', 'Hodin provozu'],
+          (x.disks || []).map((k) => [k.model, k.serial, gb(k.size_gb), k.type, k.interface,
+            k.health ? el('span', { class: 'badge ' + (/^(Healthy|OK)$/i.test(k.health) ? 'ok' : 'warn') }, k.health) : '',
+            k.wear_pct != null ? k.wear_pct + ' %' : '', k.temp_c != null ? k.temp_c + ' °C' : '', k.power_on_hours != null ? k.power_on_hours : '']),
+          'Disky nebyly zjištěny')),
         section('Svazky', simpleTable(['Jednotka', 'Systém souborů', 'Velikost', 'Volné'],
           (x.volumes || []).map((v) => [v.drive, v.fs, gb(v.size_gb), gb(v.free_gb)]))),
         section('Grafika', simpleTable(['Název', 'Paměť', 'Ovladač'], (x.gpus || []).map((g) => [g.name, g.vram_mb ? g.vram_mb + ' MB' : '', g.driver]))),
-        section('Síťové adaptéry', simpleTable(['Název', 'MAC', 'IP adresy', 'Brána', 'DNS', 'DHCP'],
-          (x.nics || []).map((n) => [n.name, n.mac, (n.ips || []).join(', '), n.gateway, n.dns, n.dhcp ? 'ano' : 'ne']))),
         section('Tiskárny', simpleTable(['Název', 'Ovladač', 'Port', 'Výchozí'],
           (x.printers || []).map((t) => [t.name, t.driver, t.port, t.is_default ? 'ano' : '']))));
+    }],
+    ['sec', 'Zabezpečení', (box) => {
+      const s = x.security;
+      if (!s) { box.append(el('div', { class: 'note-box info' }, 'Údaje o zabezpečení zatím chybí – počkejte na další inventuru agenta (verze 1.1.0 a novější).')); return; }
+      const yn = (v) => (v == null || v === '' ? '' : el('span', { class: 'badge ' + (v === true || v === 'ano' || v === 'zapnuto' ? 'ok' : 'warn') }, v === true ? 'ano' : v === false ? 'ne' : v));
+      const bl = (s.bitlocker || []).map((v) => v.drive + ' ' + (v.protected ? 'chráněno' : 'nechráněno')).join(', ');
+      const av = (s.antivirus || []).map((a) => a.name + (a.enabled ? '' : ' (vypnuto)') + (a.up_to_date ? '' : ' (zastaralé definice)')).join(', ');
+      const df = s.defender ? 'Defender ' + (s.defender.enabled ? 'zapnut' : 'vypnut') + (s.defender.realtime ? ', ochrana v reálném čase' : '') +
+        (s.defender.signatures ? ', definice ' + s.defender.signatures : '') : '';
+      const fw = s.firewall || {};
+      box.append(el('div', { class: 'card' }, el('h3', null, 'Stav zabezpečení'), kv([
+        ['BitLocker', bl || 'nezjištěno'], ['Antivirus', av || (s.antivirus_text || '')], ['Windows Defender', df],
+        ['Firewall – doména', fw.domain == null ? '' : yn(fw.domain)], ['Firewall – soukromá síť', fw.private == null ? '' : yn(fw.private)],
+        ['Firewall – veřejná síť', fw.public == null ? '' : yn(fw.public)],
+        ['Secure Boot', yn(s.secure_boot_text)], ['TPM', s.tpm_text], ['Řízení uživatelských účtů (UAC)', s.uac == null ? '' : yn(s.uac)],
+        ['Vzdálená plocha (RDP)', s.rdp_enabled == null ? '' : (s.rdp_enabled ? 'zapnuta' + (s.rdp_nla ? ' (s ověřením NLA)' : ' (bez NLA)') : 'vypnuta')],
+        ['Poslední aktualizace Windows', s.last_hotfix], ['Poslední úspěšná instalace', s.last_update_success],
+        ['Počet nainstalovaných oprav', s.hotfix_count], ['Čeká na restart', s.pending_reboot_text],
+        ['Stav disků', s.disk_health_text], ['Předpověď selhání disku (S.M.A.R.T.)', s.disk_failure_predicted ? 'ano – hrozí selhání' : '']])));
+    }],
+    ['lic', 'Licence systému', (box) => {
+      const l = x.licenses;
+      if (!l) { box.append(el('div', { class: 'note-box info' }, 'Údaje o licencích zatím chybí – počkejte na další inventuru agenta (verze 1.1.0 a novější).')); return; }
+      box.append(
+        el('div', { class: 'card' }, el('h3', null, 'Licenční klíč uložený v BIOSu'), kv([
+          ['Klíč', admin ? l.oem_key : (l.windows_text ? '(zobrazuje jen administrátor)' : '')], ['Popis', l.oem_description], ['Windows', l.windows_text]])),
+        section('Aktivované produkty (Windows, Office)', simpleTable(['Druh', 'Název', 'Stav', 'Poslední znaky klíče', 'Kanál', 'KMS server'],
+          (l.products || []).map((p) => [p.kind, p.name, el('span', { class: 'badge ' + (p.status_code === 1 ? 'ok' : 'warn') }, p.status), p.partial_key, p.channel, p.kms_server]),
+          'Žádný aktivovaný produkt nebyl nalezen')));
+    }],
+    ['net', 'Síť', (box) => {
+      const n = x.network || {};
+      box.append(
+        section('Síťové adaptéry', simpleTable(['Název', 'Druh', 'MAC', 'IP adresy', 'Rychlost', 'Brána', 'DNS', 'DHCP'],
+          (x.nics || []).map((a) => [a.name, a.kind, a.mac, (a.ips || []).join(', '), a.speed_mbps ? a.speed_mbps + ' Mb/s' : '',
+            a.gateway, a.dns, a.dhcp ? 'ano (' + (a.dhcp_server || '?') + ')' : 'ne']))),
+        el('div', { class: 'card' }, el('h3', null, 'Další údaje'), kv([['Wi-Fi síť', n.wifi_ssid],
+          ['Naslouchající TCP porty', (n.listening || []).join(', ')]])),
+        section('Sdílené složky', simpleTable(['Název', 'Cesta', 'Popis'], (n.shares || []).map((sh) => [sh.name, sh.path, sh.description]), 'Nic není sdíleno')));
+    }],
+    ['acc', 'Účty', (box) => {
+      const a = x.accounts;
+      if (!a) { box.append(el('div', { class: 'note-box info' }, 'Údaje o účtech zatím chybí – počkejte na další inventuru agenta (verze 1.1.0 a novější).')); return; }
+      box.append(
+        section('Místní administrátoři', simpleTable(['Účet'], (a.admins || []).map((u) => [u]), 'Nezjištěno')),
+        section('Místní účty', simpleTable(['Účet', 'Celé jméno', 'Stav', 'Heslo vyžadováno', 'Heslo vyprší'],
+          (a.local || []).map((u) => [u.name, u.full_name, el('span', { class: 'badge ' + (u.disabled ? '' : 'ok') }, u.disabled ? 'zakázán' : (u.locked ? 'uzamčen' : 'aktivní')),
+            u.pw_required ? 'ano' : 'ne', u.pw_expires ? 'ano' : 'ne']))),
+        section('Profily uživatelů (kdo se na počítači přihlásil)', simpleTable(['Uživatel', 'Naposledy použit', 'Složka', 'Přihlášen'],
+          (a.profiles || []).map((u) => [u.user, u.last_use, u.path, u.loaded ? 'ano' : '']), 'Žádné profily')));
     }],
     ['mon', 'Monitory (' + d.monitors.filter((m) => m.connected).length + ')', (box) => box.append(simpleTable(
       ['Výrobce', 'Model', 'Sériové číslo', 'Úhlopříčka', 'Rok výroby', 'Připojení', 'Stav', 'Naposledy viděn'],

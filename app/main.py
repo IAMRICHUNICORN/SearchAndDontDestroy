@@ -403,6 +403,8 @@ def device_detail(device_id: int, view: Optional[int] = None, user=Depends(activ
             device["details"] = json.loads(device["details"] or "{}")
         except ValueError:
             device["details"] = {}
+        if user["role"] != "admin" and isinstance(device["details"].get("licenses"), dict):
+            device["details"]["licenses"].pop("oem_key", None)  # klic ve firmware vidi jen administrator
         person = conn.execute("SELECT * FROM ad_users WHERE sam = ?", (device["user_sam"],)).fetchone()
         device["person"] = dict(person) if person and device["user_sam"] else None
         q = lambda sql: [dict(r) for r in conn.execute(sql, (device_id,))]  # noqa: E731

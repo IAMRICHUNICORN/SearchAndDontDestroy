@@ -53,8 +53,8 @@ docker compose up -d --build
 
 ```bash
 ./scripts/build-image.sh amd64        # nebo arm64 podle procesoru QNAPu
-# vznikne dist/hwsw-monitor-1.0.0-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
-docker load -i hwsw-monitor-1.0.0-amd64.tar
+# vznikne dist/hwsw-monitor-1.1.0-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
+docker load -i hwsw-monitor-1.1.0-amd64.tar
 docker compose up -d --no-build
 ```
 

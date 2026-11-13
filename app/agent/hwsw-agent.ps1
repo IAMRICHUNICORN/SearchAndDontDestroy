@@ -264,10 +264,20 @@ function Get-Disks {
         $phys = @(Get-PhysicalDisk -ErrorAction Stop)
         foreach ($d in $phys) {
             if ((Text $d.BusType) -eq 'USB') { continue }
-            $list += @{
+            $item = @{
                 model = (Text $d.FriendlyName); serial = (Text $d.SerialNumber)
                 size_gb = [math]::Round([double]$d.Size / 1GB); type = (Text $d.MediaType); interface = (Text $d.BusType)
+                health = (Text $d.HealthStatus); status = ((@($d.OperationalStatus) | ForEach-Object { [string]$_ }) -join ', ')
             }
+            try {
+                $rel = $d | Get-StorageReliabilityCounter -ErrorAction Stop
+                if ($rel) {
+                    if ($null -ne $rel.Temperature) { $item.temp_c = [int]$rel.Temperature }
+                    if ($null -ne $rel.Wear) { $item.wear_pct = [int]$rel.Wear }
+                    if ($null -ne $rel.PowerOnHours) { $item.power_on_hours = [int]$rel.PowerOnHours }
+                }
+            } catch {}
+            $list += $item
         }
         $done = $true
     } catch {}
@@ -277,10 +287,224 @@ function Get-Disks {
             $list += @{
                 model = (Text $d.Model); serial = (Text $d.SerialNumber)
                 size_gb = [math]::Round([double]$d.Size / 1GB); type = ''; interface = (Text $d.InterfaceType)
+                health = (Text $d.Status)
             }
         }
     }
     return ,$list
+}
+
+function Get-RegValue([string]$Path, [string]$Name) {
+    try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name } catch { return $null }
+}
+
+function Invoke-Safe([scriptblock]$Block, $Default) {
+    # chyba v jedne casti inventury nesmi zabranit odeslani ostatnich dat
+    try { return (& $Block) } catch { return $Default }
+}
+
+function Get-Security {
+    $sec = @{}
+    # BitLocker (WMI, funguje i na starsich Windows)
+    $bl = @()
+    foreach ($v in (Wmi 'Win32_EncryptableVolume' '' 'root\CIMV2\Security\MicrosoftVolumeEncryption')) {
+        $bl += @{ drive = (Text $v.DriveLetter); protected = ([int]$v.ProtectionStatus -eq 1) }
+    }
+    $sec.bitlocker = $bl
+    $sec.bitlocker_os = ''
+    if ($bl.Count -gt 0) {
+        $sysDrive = $env:SystemDrive
+        $osVol = $bl | Where-Object { $_.drive -eq $sysDrive } | Select-Object -First 1
+        if ($osVol) { if ($osVol.protected) { $sec.bitlocker_os = 'ano' } else { $sec.bitlocker_os = 'ne' } }
+    }
+    # antivirus: Centrum zabezpeceni (jen stanice) a Windows Defender
+    $av = @()
+    foreach ($a in (Wmi 'AntiVirusProduct' '' 'root\SecurityCenter2')) {
+        $state = 0
+        try { $state = [int]$a.productState } catch {}
+        $av += @{ name = (Text $a.displayName); enabled = ((($state -shr 8) -band 16) -ne 0); up_to_date = (($state -band 255) -eq 0) }
+    }
+    $sec.antivirus = $av
+    try {
+        $mp = Get-MpComputerStatus -ErrorAction Stop
+        $sig = ''
+        if ($mp.AntivirusSignatureLastUpdated) { $sig = $mp.AntivirusSignatureLastUpdated.ToString('yyyy-MM-dd') }
+        $sec.defender = @{ enabled = [bool]$mp.AntivirusEnabled; realtime = [bool]$mp.RealTimeProtectionEnabled
+                           signatures = $sig; version = (Text $mp.AMProductVersion) }
+    } catch {}
+    $avText = ''
+    $active = @($av | Where-Object { $_.enabled } | ForEach-Object { $_.name })
+    if ($active.Count -gt 0) { $avText = ($active -join ', ') }
+    elseif ($sec.defender -and $sec.defender.enabled) { $avText = 'Windows Defender' }
+    elseif ($av.Count -gt 0 -or $sec.defender) { $avText = 'vypnuto' }
+    $sec.antivirus_text = $avText
+    # firewall
+    $fw = @{}
+    $base = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy'
+    foreach ($pair in @(@('domain', 'DomainProfile'), @('private', 'StandardProfile'), @('public', 'PublicProfile'))) {
+        $v = Get-RegValue ($base + '\' + $pair[1]) 'EnableFirewall'
+        if ($null -ne $v) { $fw[$pair[0]] = ([int]$v -eq 1) }
+    }
+    $sec.firewall = $fw
+    $sec.firewall_text = ''
+    if ($fw.Count -gt 0) {
+        $off = @($fw.Keys | Where-Object { -not $fw[$_] })
+        if ($off.Count -eq 0) { $sec.firewall_text = 'zapnuto' } elseif ($off.Count -eq $fw.Count) { $sec.firewall_text = 'vypnuto' } else { $sec.firewall_text = 'castecne' }
+    }
+    # zavadeni systemu, Secure Boot, TPM
+    $sb = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' 'UEFISecureBootEnabled'
+    if ($null -ne $sb) {
+        $sec.boot_mode = 'UEFI'
+        if ([int]$sb -eq 1) { $sec.secure_boot_text = 'ano' } else { $sec.secure_boot_text = 'ne' }
+    } else { $sec.boot_mode = 'Legacy BIOS'; $sec.secure_boot_text = 'ne' }
+    $tpm = Wmi 'Win32_Tpm' '' 'root\CIMV2\Security\MicrosoftTpm' | Select-Object -First 1
+    if ($tpm) {
+        $ver = ''
+        try { $ver = Text ((([string]$tpm.SpecVersion) -split ',')[0]) } catch {}
+        $sec.tpm = @{ enabled = [bool]$tpm.IsEnabled_InitialValue; activated = [bool]$tpm.IsActivated_InitialValue; version = $ver }
+        if ($sec.tpm.enabled) { $sec.tpm_text = 'ano ' + $ver } else { $sec.tpm_text = 'vypnuto' }
+    } else { $sec.tpm_text = 'ne' }
+    # UAC, vzdalena plocha
+    $uac = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
+    if ($null -ne $uac) { $sec.uac = ([int]$uac -eq 1) }
+    $rdp = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections'
+    if ($null -ne $rdp) { $sec.rdp_enabled = ([int]$rdp -eq 0) }
+    $nla = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'UserAuthentication'
+    if ($null -ne $nla) { $sec.rdp_nla = ([int]$nla -eq 1) }
+    # aktualizace
+    $last = $null; $count = 0
+    foreach ($h in (Wmi 'Win32_QuickFixEngineering')) {
+        $count++
+        try {
+            $dt = [datetime]$h.InstalledOn
+            if ($null -eq $last -or $dt -gt $last) { $last = $dt }
+        } catch {}
+    }
+    $sec.hotfix_count = $count
+    $sec.last_hotfix = ''
+    if ($last) { $sec.last_hotfix = $last.ToString('yyyy-MM-dd') }
+    $wu = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\Results\Install' 'LastSuccessTime'
+    $sec.last_update_success = Text $wu
+    $reboot = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
+              (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+    $sec.pending_reboot = $reboot
+    if ($reboot) { $sec.pending_reboot_text = 'ano' } else { $sec.pending_reboot_text = 'ne' }
+    # predpoved selhani disku podle S.M.A.R.T.
+    $fail = $false
+    foreach ($f in (Wmi 'MSStorageDriver_FailurePredictStatus' '' 'root\wmi')) { if ($f.PredictFailure) { $fail = $true } }
+    $sec.disk_failure_predicted = $fail
+    return $sec
+}
+
+function Get-DiskHealthText($Disks, $Predicted) {
+    if ($Predicted) { return 'hrozi selhani' }
+    $bad = @($Disks | Where-Object { $_.health -and $_.health -notmatch '^(Healthy|OK)$' })
+    if ($bad.Count -gt 0) { return 'varovani' }
+    $worn = @($Disks | Where-Object { $null -ne $_.wear_pct -and $_.wear_pct -ge 80 })
+    if ($worn.Count -gt 0) { return 'opotrebeny' }
+    if (@($Disks).Count -gt 0) { return 'v poradku' }
+    return ''
+}
+
+function Get-Licenses {
+    $out = @{ oem_key = ''; oem_description = ''; windows_text = '' }
+    $svc = Wmi 'SoftwareLicensingService' | Select-Object -First 1
+    if ($svc) {
+        $out.oem_key = Text $svc.OA3xOriginalProductKey
+        $out.oem_description = Text $svc.OA3xOriginalProductKeyDescription
+    }
+    $status = @{ 0 = 'nelicencovano'; 1 = 'licencovano'; 2 = 'odklad (OOB)'; 3 = 'odklad (OOT)'; 4 = 'neoriginalni'; 5 = 'upozorneni'; 6 = 'prodlouzeny odklad' }
+    $products = @()
+    foreach ($p in (Wmi 'SoftwareLicensingProduct' 'PartialProductKey IS NOT NULL')) {
+        $app = (Text $p.ApplicationID).ToLower()
+        $kind = ''
+        if ($app -eq '55c92734-d682-4d71-983e-d6ec3f16059f') { $kind = 'Windows' }
+        elseif ($app -eq '0ff1ce15-a989-479d-af46-f275c6370663') { $kind = 'Office' }
+        else { continue }
+        $code = 0
+        try { $code = [int]$p.LicenseStatus } catch {}
+        $label = [string]$code
+        if ($status.ContainsKey($code)) { $label = $status[$code] }
+        $products += @{
+            kind = $kind; name = (Text $p.Name); description = (Text $p.Description); status = $label; status_code = $code
+            partial_key = (Text $p.PartialProductKey); channel = (Text $p.ProductKeyChannel); family = (Text $p.LicenseFamily)
+            kms_server = (Text $p.KeyManagementServiceMachine)
+        }
+    }
+    foreach ($p in (Wmi 'OfficeSoftwareProtectionProduct' 'PartialProductKey IS NOT NULL')) {
+        $code = 0
+        try { $code = [int]$p.LicenseStatus } catch {}
+        $label = [string]$code
+        if ($status.ContainsKey($code)) { $label = $status[$code] }
+        $products += @{
+            kind = 'Office'; name = (Text $p.Name); description = (Text $p.Description); status = $label; status_code = $code
+            partial_key = (Text $p.PartialProductKey); channel = ''; family = ''; kms_server = ''
+        }
+    }
+    $out.products = @($products | Select-Object -First 40)
+    $win = $products | Where-Object { $_.kind -eq 'Windows' } | Select-Object -First 1
+    if ($win) {
+        $out.windows_text = $win.status
+        if ($win.channel) { $out.windows_text = $win.status + ' (' + $win.channel + ')' }
+    }
+    return $out
+}
+
+function Get-Accounts {
+    $out = @{}
+    $local = @()
+    foreach ($u in (Wmi 'Win32_UserAccount' 'LocalAccount=True')) {
+        $local += @{
+            name = (Text $u.Name); full_name = (Text $u.FullName); disabled = [bool]$u.Disabled; locked = [bool]$u.Lockout
+            pw_required = [bool]$u.PasswordRequired; pw_expires = [bool]$u.PasswordExpires
+        }
+    }
+    $out.local = $local
+    $admins = @()
+    try {
+        $grp = (New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544').Translate([Security.Principal.NTAccount]).Value
+        $grp = ($grp -split '\\')[-1]
+        $g = [ADSI]('WinNT://./' + $grp + ',group')
+        foreach ($m in @($g.Invoke('Members'))) {
+            $path = [string]$m.GetType().InvokeMember('ADsPath', 'GetProperty', $null, $m, $null)
+            $admins += (($path -replace '^WinNT://', '') -replace '/', '\')
+        }
+    } catch {}
+    $out.admins = $admins
+    $profiles = @()
+    foreach ($p in @(Wmi 'Win32_UserProfile' 'Special=False' | Select-Object -First 60)) {
+        $name = [string]$p.SID
+        try { $name = (New-Object Security.Principal.SecurityIdentifier ([string]$p.SID)).Translate([Security.Principal.NTAccount]).Value } catch {}
+        $when = ''
+        try { $when = [Management.ManagementDateTimeConverter]::ToDateTime($p.LastUseTime).ToString('yyyy-MM-dd HH:mm') } catch {}
+        $profiles += @{ user = $name; last_use = $when; path = (Text $p.LocalPath); loaded = [bool]$p.Loaded }
+    }
+    $out.profiles = @($profiles | Sort-Object { $_.last_use } -Descending)
+    return $out
+}
+
+function Get-NetworkExtra {
+    $out = @{}
+    $listen = @()
+    try {
+        $listen = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+            ForEach-Object { [int]$_.Port } | Sort-Object -Unique | Select-Object -First 80)
+    } catch {}
+    $out.listening = $listen
+    $shares = @()
+    foreach ($sh in (Wmi 'Win32_Share' 'Type=0')) {
+        if ((Text $sh.Name) -notmatch '\$$') {
+            $shares += @{ name = (Text $sh.Name); path = (Text $sh.Path); description = (Text $sh.Description) }
+        }
+    }
+    $out.shares = $shares
+    $ssid = ''
+    try {
+        $line = & netsh.exe wlan show interfaces 2>$null | Select-String -Pattern '^\s*SSID\s*:' | Select-Object -First 1
+        if ($line) { $ssid = (($line.ToString()) -replace '^\s*SSID\s*:\s*', '').Trim() }
+    } catch {}
+    $out.wifi_ssid = $ssid
+    return $out
 }
 
 function Get-Inventory {
@@ -289,6 +513,8 @@ function Get-Inventory {
     $prod = Wmi 'Win32_ComputerSystemProduct' | Select-Object -First 1
     $encl = Wmi 'Win32_SystemEnclosure' | Select-Object -First 1
     $os = Wmi 'Win32_OperatingSystem' | Select-Object -First 1
+    $board = Wmi 'Win32_BaseBoard' | Select-Object -First 1
+    $adapters = @(Wmi 'Win32_NetworkAdapter' 'PhysicalAdapter=True')
 
     $release = ''
     try {
@@ -329,10 +555,20 @@ function Get-Inventory {
     $nics = @(); $primaryIp = ''; $primaryMac = ''
     foreach ($n in (Wmi 'Win32_NetworkAdapterConfiguration' 'IPEnabled=True')) {
         $ips = @($n.IPAddress | Where-Object { $_ })
+        $ad = $adapters | Where-Object { $_.MACAddress -and $_.MACAddress -eq $n.MACAddress } | Select-Object -First 1
+        $kind = 'kabel'
+        if ((Text $n.Description) -match 'Wireless|Wi-?Fi|802\.11|WLAN') { $kind = 'Wi-Fi' }
+        elseif ((Text $n.Description) -match 'Bluetooth') { $kind = 'Bluetooth' }
+        $speed = 0; $conn = ''
+        if ($ad) {
+            try { $speed = [math]::Round([double]$ad.Speed / 1000000) } catch {}
+            $conn = Text $ad.NetConnectionID
+        }
         $nics += @{
             name = (Text $n.Description); mac = (Text $n.MACAddress); ips = $ips; dhcp = [bool]$n.DHCPEnabled
             gateway = (@($n.DefaultIPGateway | Where-Object { $_ }) -join ', ')
             dns = (@($n.DNSServerSearchOrder | Where-Object { $_ }) -join ', ')
+            dhcp_server = (Text $n.DHCPServer); dns_suffix = (Text $n.DNSDomain); kind = $kind; speed_mbps = $speed; connection = $conn
         }
         if (-not $primaryIp -and $n.DefaultIPGateway) {
             $primaryIp = [string]($ips | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1)
@@ -351,6 +587,9 @@ function Get-Inventory {
     if ($cs -and $cs.PartOfDomain) { $domain = Text $cs.Domain }
     $fqdn = $env:COMPUTERNAME
     if ($domain) { $fqdn = '{0}.{1}' -f $env:COMPUTERNAME, $domain }
+    $diskList = Get-Disks
+    $security = Invoke-Safe { Get-Security } @{}
+    $security.disk_health_text = Get-DiskHealthText $diskList $security.disk_failure_predicted
 
     return @{
         agent_version = $AgentVersion
@@ -364,6 +603,8 @@ function Get-Inventory {
             manufacturer = (Text $cs.Manufacturer); model = (Text $cs.Model); serial = (Text $bios.SerialNumber)
             uuid = (Text $prod.UUID); sku = (Text $cs.SystemSKUNumber); chassis = @($encl.ChassisTypes)
             bios_version = (Text $bios.SMBIOSBIOSVersion); bios_date = $biosDate; asset_tag = (Text $encl.SMBIOSAssetTag)
+            bios_vendor = (Text $bios.Manufacturer); smbios = ('{0}.{1}' -f $bios.SMBIOSMajorVersion, $bios.SMBIOSMinorVersion)
+            board_manufacturer = (Text $board.Manufacturer); board_model = (Text $board.Product); board_serial = (Text $board.SerialNumber)
         }
         os = @{
             name = (Text $os.Caption); version = $osVersion; build = (Text $os.BuildNumber)
@@ -372,11 +613,15 @@ function Get-Inventory {
         cpu = $cpus
         ram_mb = [math]::Round([double]$cs.TotalPhysicalMemory / 1MB)
         ram_modules = $ram
-        disks = (Get-Disks)
+        disks = $diskList
         volumes = $volumes
         gpus = $gpus
         nics = $nics
         printers = $printers
+        security = $security
+        licenses = (Invoke-Safe { Get-Licenses } @{})
+        accounts = (Invoke-Safe { Get-Accounts } @{})
+        network = (Invoke-Safe { Get-NetworkExtra } @{})
         monitors = (Get-Monitors)
         software = (Get-Software)
         usb = (Get-UsbList)

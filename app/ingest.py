@@ -240,7 +240,8 @@ def ingest_inventory(conn, payload):
         serial = ""
 
     details = {k: payload.get(k) for k in
-               ("system", "os", "cpu", "ram_modules", "disks", "volumes", "gpus", "nics", "printers")}
+               ("system", "os", "cpu", "ram_modules", "disks", "volumes", "gpus", "nics", "printers",
+                "security", "licenses", "accounts", "network")}
     details_json = json.dumps(details, ensure_ascii=False)[:400000]
 
     device = find_device(conn, hostname, mac)

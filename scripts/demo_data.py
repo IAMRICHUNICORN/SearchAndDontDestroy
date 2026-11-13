@@ -59,7 +59,7 @@ for i in range(1, 15):
     sw = [{"name": n, "version": v, "publisher": p, "install_date": "2025-%02d-%02d" % (random.randint(1, 12), random.randint(1, 28))}
           for n, v, p in BASE_SW + random.sample(EXTRA_SW, random.randint(1, 4))]
     payload = {
-        "agent_version": "1.0.0", "hostname": name, "domain": "firma.local", "fqdn": name.lower() + ".firma.local",
+        "agent_version": "1.1.0", "hostname": name, "domain": "firma.local", "fqdn": name.lower() + ".firma.local",
         "user": "FIRMA\\" + user, "primary_ip": "192.168.10.%d" % (20 + i),
         "primary_mac": "D4:5D:64:%02X:%02X:%02X" % (random.randint(0, 255), random.randint(0, 255), i),
         "system": {"manufacturer": maker, "model": model, "serial": "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ0123456789") for _ in range(7)),
@@ -68,13 +68,31 @@ for i in range(1, 15):
                "arch": "64-bit", "install_date": "2024-02-11", "last_boot": "2026-11-13 07:%02d" % random.randint(10, 59)},
         "cpu": [{"name": random.choice(CPUS), "cores": 6, "threads": 12}], "ram_mb": ram,
         "ram_modules": [{"slot": "DIMM %d" % (k + 1), "size_mb": ram // 2, "speed": 3200, "manufacturer": "Samsung", "part": "M471A1G44AB0-CWE", "serial": "%08X" % random.getrandbits(32)} for k in range(2)],
-        "disks": [{"model": "Samsung SSD 980 PRO 512GB", "serial": "S5GXNX0T%06d" % random.randint(1, 999999), "size_gb": 477, "type": "SSD", "interface": "NVMe"}],
+        "disks": [{"model": "Samsung SSD 980 PRO 512GB", "serial": "S5GXNX0T%06d" % random.randint(1, 999999), "size_gb": 477, "type": "SSD", "interface": "NVMe", "health": "Healthy", "wear_pct": 4, "temp_c": 38, "power_on_hours": 2100}],
         "volumes": [{"drive": "C:", "fs": "NTFS", "size_gb": 475.9, "free_gb": round(random.uniform(60, 380), 1)}],
         "gpus": [{"name": "Intel(R) UHD Graphics 770", "vram_mb": 1024, "driver": "31.0.101.5186"}],
         "nics": [{"name": "Intel(R) Ethernet Connection I219-LM", "mac": "D4:5D:64:00:00:%02X" % i, "ips": ["192.168.10.%d" % (20 + i)],
-                  "dhcp": True, "gateway": "192.168.10.1", "dns": "192.168.10.2"}],
+                  "dhcp": True, "gateway": "192.168.10.1", "dns": "192.168.10.2", "kind": "kabel", "speed_mbps": 1000, "dhcp_server": "192.168.10.2"}],
         "printers": [{"name": "HP LaserJet M404dn", "driver": "HP Universal Printing PCL 6", "port": "192.168.10.200", "is_default": True}],
         "monitors": mons, "software": sw, "usb": usb,
+        "security": {
+            "bitlocker": [{"drive": "C:", "protected": i % 3 != 0}], "bitlocker_os": "ano" if i % 3 != 0 else "ne",
+            "antivirus": [{"name": "Windows Defender", "enabled": True, "up_to_date": True}], "antivirus_text": "Windows Defender",
+            "defender": {"enabled": True, "realtime": True, "signatures": "2026-11-13", "version": "4.18.24090"},
+            "firewall": {"domain": True, "private": True, "public": i % 5 != 0}, "firewall_text": "zapnuto" if i % 5 else "castecne",
+            "boot_mode": "UEFI", "secure_boot_text": "ano", "tpm": {"enabled": True, "activated": True, "version": "2.0"}, "tpm_text": "ano 2.0",
+            "uac": True, "rdp_enabled": i % 2 == 0, "rdp_nla": True, "hotfix_count": 14, "last_hotfix": "2026-10-%02d" % (8 + i % 20),
+            "last_update_success": "2026-11-1 06:12:44", "pending_reboot": False, "pending_reboot_text": "ne",
+            "disk_failure_predicted": False, "disk_health_text": "v poradku"},
+        "licenses": {"oem_key": "XXXXX-XXXXX-XXXXX-XXXXX-%05d" % i, "oem_description": "Windows 11 Pro OEM", "windows_text": "licencovano (OEM:DM)",
+                     "products": [{"kind": "Windows", "name": "Windows(R), Professional edition", "description": "Windows Operating System", "status": "licencovano",
+                                   "status_code": 1, "partial_key": "H7T9Q", "channel": "OEM:DM", "family": "Professional", "kms_server": ""},
+                                  {"kind": "Office", "name": "Office 21, Office21ProPlus2021VL_KMS_Client edition", "description": "Office", "status": "licencovano",
+                                   "status_code": 1, "partial_key": "6F7YD", "channel": "GVLK", "family": "", "kms_server": "kms.firma.local"}]},
+        "accounts": {"local": [{"name": "Administrator", "full_name": "", "disabled": True, "locked": False, "pw_required": True, "pw_expires": False}],
+                     "admins": [name + "\\Administrator", "FIRMA\\Domain Admins"],
+                     "profiles": [{"user": "FIRMA\\" + user, "last_use": "2026-11-13 07:30", "path": "C:\\Users\\" + user, "loaded": True}]},
+        "network": {"listening": [135, 445, 3389], "shares": [{"name": "Sdileno", "path": "D:\\Sdileno", "description": ""}], "wifi_ssid": ""},
     }
     post("/api/agent/inventory", payload)
     hosts.append((name, user, usb, payload))
