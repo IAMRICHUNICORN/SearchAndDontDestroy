@@ -193,6 +193,17 @@ MIGRATIONS = [
             status TEXT NOT NULL DEFAULT 'running',
             summary TEXT DEFAULT '')""",
     ],
+    [
+        # verze 1.1.0: hotovy pohled "Zabezpeceni" (admin ho muze upravit nebo smazat)
+        """INSERT INTO views(name, description, entity, columns, filters, sort, sort_dir, position)
+           SELECT 'Zabezpečení počítačů',
+                  'BitLocker, antivirus, firewall, Secure Boot, TPM, aktualizace a stav disků',
+                  'devices',
+                  '["hostname","logged_user","os_name","sec_bitlocker","sec_antivirus","sec_firewall","sec_secure_boot","sec_tpm","sec_last_hotfix","sec_pending_reboot","disk_health","local_admins"]',
+                  '[{"col":"last_inventory","op":"not_empty","value":""}]',
+                  'hostname', 'asc', 100
+           WHERE NOT EXISTS (SELECT 1 FROM views WHERE name = 'Zabezpečení počítačů')""",
+    ],
 ]
 
 
