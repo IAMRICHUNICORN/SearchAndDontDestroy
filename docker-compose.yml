@@ -1,0 +1,19 @@
+# HWSW Monitor - nasazeni na QNAP (Container Station) nebo jakykoli Docker.
+services:
+  hwsw:
+    image: hwsw-monitor:1.0.0
+    build: .
+    container_name: hwsw-monitor
+    restart: unless-stopped
+    ports:
+      - "8580:8580"          # QNAP sam pouziva 8080/443, proto 8580
+    environment:
+      TZ: Europe/Prague
+      # Heslo uctu "admin" pri uplne prvnim startu (jinak "admin"; zmena je pri prihlaseni povinna).
+      # HWSW_ADMIN_PASSWORD: "zmente-me"
+    volumes:
+      - ./data:/data          # databaze + zalohy + sifrovaci klic; prezije jakoukoli aktualizaci image
+
+    # Varianta s primym pristupem do site (presnejsi zjisteni MAC adres pri skenu):
+    # zakomentujte "ports:" vyse a odkomentujte nasledujici radek.
+    # network_mode: host
