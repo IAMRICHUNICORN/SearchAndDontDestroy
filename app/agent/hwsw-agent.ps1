@@ -18,6 +18,39 @@ $TaskName = 'HWSW Agent'
 $ErrorActionPreference = 'Continue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
 
+# HTTPS s vlastnim certifikatem serveru: projde jen duveryhodny certifikat nebo presne ten,
+# jehoz otisk (SHA-1) server vlozil pri stazeni. Trida v C# - overeni pak funguje z kazdeho vlakna.
+$CertPin = '__CERT_PIN__'
+if ($CertPin -match '^[0-9A-Fa-f]{40}$') {
+    try {
+        if (-not ('HwswTls' -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class HwswTls {
+    public static string Pin = "";
+    public static bool Check(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+        if (errors == SslPolicyErrors.None) { return true; }
+        if (cert == null || Pin.Length == 0) { return false; }
+        return String.Equals(cert.GetCertHashString(), Pin, StringComparison.OrdinalIgnoreCase);
+    }
+    public static void Enable(string pin) {
+        Pin = pin;
+        ServicePointManager.ServerCertificateValidationCallback = new RemoteCertificateValidationCallback(Check);
+    }
+}
+'@
+        }
+        [HwswTls]::Enable($CertPin)
+    } catch {
+        # prekladac C# neni k dispozici - nahradni overeni primo v PowerShellu
+        $pinCheck = [scriptblock]::Create('$args[3] -eq 0 -or $args[1].GetCertHashString() -eq ''' + $CertPin + '''')
+        [Net.ServicePointManager]::ServerCertificateValidationCallback = $pinCheck
+    }
+}
+
 function Send-Json([string]$Path, $Data) {
     $json = $Data | ConvertTo-Json -Depth 8 -Compress
     $bytes = [Text.Encoding]::UTF8.GetBytes($json)

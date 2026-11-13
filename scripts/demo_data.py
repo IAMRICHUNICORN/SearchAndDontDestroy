@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """Naplni HWSW Monitor ukazkovymi daty pres API agenta (pro vyzkouseni bez Windows pocitacu).
 
-Pouziti: python3 scripts/demo_data.py http://localhost:8580 TOKEN_AGENTA
+Pouziti: python3 scripts/demo_data.py https://localhost:8580 TOKEN_AGENTA
+
+Certifikat serveru se neoveruje - skript je jen pro vyzkouseni na vlastnim stroji.
 """
 import json
 import random
+import ssl
 import sys
 import urllib.request
 
 URL, TOKEN = sys.argv[1].rstrip("/"), sys.argv[2]
 random.seed(7)
+CTX = ssl._create_unverified_context() if URL.lower().startswith("https://") else None
 
 
 def post(path, data):
     req = urllib.request.Request(URL + path, json.dumps(data).encode(), {
         "Content-Type": "application/json", "X-Agent-Token": TOKEN})
-    return json.load(urllib.request.urlopen(req, timeout=20))
+    return json.load(urllib.request.urlopen(req, timeout=20, context=CTX))
 
 
 MODELS = [("Dell Inc.", "OptiPlex 7010", [3]), ("Dell Inc.", "Latitude 5540", [10]), ("LENOVO", "ThinkPad T14 Gen 4", [10]),

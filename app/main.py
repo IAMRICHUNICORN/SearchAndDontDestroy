@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from . import db, discovery, entities, ingest
+from . import db, discovery, entities, ingest, tls
 from .bus import bus
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -620,7 +620,15 @@ def users_delete(user_id: int, user=Depends(admin_user)):
 # -------------------------------------------------------------- nastaveni
 
 def _base_url(request, cfg):
-    return (cfg.get("server_url") or str(request.base_url)).rstrip("/")
+    base = (cfg.get("server_url") or str(request.base_url)).rstrip("/")
+    # server s vlastnim HTTPS na http:// neodpovida - adresu pro agenty proto vzdy vydavame jako https
+    if tls.enabled() and base.lower().startswith("http://"):
+        base = "https://" + base[7:]
+    return base
+
+
+def _cert_pin(base):
+    return tls.thumbprint() if base.lower().startswith("https://") else ""
 
 
 @app.get("/api/settings")
@@ -722,9 +730,21 @@ def _agent_reply(conn):
             "inventory_hours": int(cfg["agent_inventory_hours"] or 6)}
 
 
+def _ps_unwrap(value):
+    """Windows PowerShell <= 5.1 umi pole serializovat jako {"value": [...], "Count": n}."""
+    if isinstance(value, dict):
+        if set(value.keys()) == {"value", "Count"} and isinstance(value["value"], list):
+            return [_ps_unwrap(v) for v in value["value"]]
+        return {k: _ps_unwrap(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_ps_unwrap(v) for v in value]
+    return value
+
+
 @app.post("/api/agent/inventory")
 def agent_inventory(request: Request, body: dict = Body(...)):
     _check_agent(request)
+    body = _ps_unwrap(body)
     try:
         with db.db() as conn:
             device_id, events = ingest.ingest_inventory(conn, body)
@@ -740,6 +760,7 @@ def agent_inventory(request: Request, body: dict = Body(...)):
 @app.post("/api/agent/usb")
 def agent_usb(request: Request, body: dict = Body(...)):
     _check_agent(request)
+    body = _ps_unwrap(body)
     with db.db() as conn:
         device_id, events = ingest.ingest_usb(conn, body)
         reply = _agent_reply(conn)
@@ -774,7 +795,8 @@ def agent_script(request: Request, token: str = "", mode: str = "once"):
     if not re.match(r"^https?://[A-Za-z0-9._~:/\[\]%-]+$", base):
         raise HTTPException(400, "Neplatná adresa serveru")
     script = (script.replace("__SERVER_URL__", base).replace("__TOKEN__", real)
-              .replace("__MODE__", mode).replace("__VERSION__", db.APP_VERSION))
+              .replace("__MODE__", mode).replace("__VERSION__", db.APP_VERSION)
+              .replace("__CERT_PIN__", _cert_pin(base)))
     return Response("﻿" + script, media_type="text/plain; charset=utf-8")
 
 
@@ -785,12 +807,22 @@ def agent_info(request: Request, user=Depends(admin_user)):
         agents = conn.execute("SELECT COUNT(*) FROM devices WHERE agent_version <> ''").fetchone()[0]
     base, token = _base_url(request, cfg), cfg.get("agent_token", "")
     url = "%s/agent/hwsw-agent.ps1?token=%s&mode=" % (base, token)
-    one = ("powershell -NoProfile -ExecutionPolicy Bypass -Command \"[Net.ServicePointManager]::SecurityProtocol="
-           "[Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object Net.WebClient)."
-           "DownloadString('%s%s'))\"")
+    pin = _cert_pin(base)
+
+    def one(mode):
+        return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"' % tls.bootstrap_ps(url + mode, pin)
+
     return {"server_url": base, "server_url_set": bool(cfg.get("server_url")), "token": token, "agents": agents,
-            "install": one % (url, "install"), "once": one % (url, "once"), "uninstall": one % (url, "uninstall"),
-            "download": url + "watch"}
+            "install": one("install"), "once": one("once"), "uninstall": one("uninstall"),
+            "download": url + "watch", "tls": tls.enabled(), "cert_thumbprint": pin}
+
+
+@app.get("/api/tls/cert")
+def tls_cert(user=Depends(admin_user)):
+    if not tls.enabled() or not os.path.isfile(tls.CERT_PATH):
+        raise HTTPException(404, "HTTPS s vlastním certifikátem není zapnuté")
+    return Response(tls.cert_pem(), media_type="application/x-pem-file",
+                    headers={"Content-Disposition": 'attachment; filename="hwsw-monitor.crt"'})
 
 
 @app.post("/api/agent-token/regenerate")

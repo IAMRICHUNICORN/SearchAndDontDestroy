@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import db, ingest
+from . import db, ingest, tls
 from .bus import bus
 
 MAX_SCAN_HOSTS = 8192
@@ -406,9 +406,10 @@ def job_winrm():
     if not cfg["winrm_user"]:
         raise ValueError("V nastavení chybí účet pro WinRM")
     mode = "install" if cfg["winrm_mode"] == "install" else "once"
-    script = ("[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; "
-              "iex ((New-Object Net.WebClient).DownloadString('%s/agent/hwsw-agent.ps1?token=%s&mode=%s'))"
-              % (server, token, mode))
+    if tls.enabled() and server.lower().startswith("http://"):
+        server = "https://" + server[7:]
+    pin = tls.thumbprint() if server.lower().startswith("https://") else ""
+    script = tls.bootstrap_ps("%s/agent/hwsw-agent.ps1?token=%s&mode=%s" % (server, token, mode), pin)
 
     def run(row):
         target = row["fqdn"] or row["ip"] or row["hostname"]

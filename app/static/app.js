@@ -772,7 +772,7 @@ PAGES.agent = async (main) => {
   const a = await api('GET', '/api/agent-info');
   pageHead(main, 'Agent pro Windows', 'Malý skript, který z počítače posílá přesný popis hardwaru, softwaru, monitorů a hlídá USB');
   const cmd = (text) => el('div', { class: 'cmd' }, el('pre', null, text), copyButton(text));
-  main.append(
+  main.append(...[
     a.server_url_set ? null : el('div', { class: 'note-box' }, 'V ', el('a', { href: '#/nastaveni' }, 'Nastavení'),
       ' není vyplněna adresa serveru. Příkazy níže používají adresu, ze které máte právě otevřený prohlížeč (', a.server_url,
       ') – ověřte, že je dostupná ze všech počítačů.'),
@@ -783,13 +783,18 @@ PAGES.agent = async (main) => {
     el('div', { class: 'card' }, el('h2', null, 'Jednorázová inventura'),
       el('p', null, 'Nic neinstaluje, jen jednou odešle inventuru. Stejný příkaz používá inventura přes WinRM.'), cmd(a.once)),
     el('div', { class: 'card' }, el('h2', null, 'Odinstalace'), cmd(a.uninstall)),
+    a.cert_thumbprint ? el('div', { class: 'card' }, el('h2', null, 'Certifikát serveru (HTTPS)'),
+      el('p', null, 'Spojení agentů je šifrované. Server používá vlastní certifikát a agenti ho ověřují podle otisku níže – je součástí příkazů výše, na počítače se nic neinstaluje. Po výměně certifikátu je potřeba agenty nainstalovat znovu.'),
+      el('div', { class: 'cmd' }, el('pre', null, a.cert_thumbprint)),
+      el('p', { class: 'muted' }, 'Aby prohlížeč nezobrazoval varování, můžete si certifikát stáhnout a přidat mezi důvěryhodné: ',
+        el('a', { href: '/api/tls/cert' }, 'stáhnout certifikát'), '.')) : null,
     el('div', { class: 'card' }, el('h2', null, 'Token agentů'),
       el('p', null, 'Token je součástí příkazů výše a opravňuje počítače posílat data. Držte ho v tajnosti.'),
       el('div', { class: 'cmd' }, el('pre', null, a.token)),
       el('button', { class: 'danger', onclick: async () => {
         if (!(await confirmBox('Vygenerovat nový token? Všichni nainstalovaní agenti přestanou odesílat data, dokud je znovu nenainstalujete novým příkazem.', 'Vygenerovat nový'))) return;
         await api('POST', '/api/agent-token/regenerate'); route();
-      } }, 'Vygenerovat nový token')));
+      } }, 'Vygenerovat nový token'))].filter(Boolean));
 };
 
 PAGES.uzivatele = async (main) => {
@@ -833,7 +838,7 @@ PAGES.nastaveni = async (main) => {
   const adResult = el('span', { class: 'small' });
   main.append(
     el('div', { class: 'card' }, el('h2', null, 'Server'),
-      text('server_url', 'Adresa této aplikace v síti', 'Např. http://192.168.1.10:8580 – na tuto adresu posílají data agenti. Musí být dostupná ze všech počítačů.'),
+      text('server_url', 'Adresa této aplikace v síti', 'Např. https://192.168.1.10:8580 – na tuto adresu posílají data agenti. Musí být dostupná ze všech počítačů.'),
       el('div', { class: 'form-grid' },
         text('offline_after_min', 'Považovat za offline po (min)', null, 'number'),
         text('agent_inventory_hours', 'Agent posílá úplnou inventuru každých (h)', null, 'number'),

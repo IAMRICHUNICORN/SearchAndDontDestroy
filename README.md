@@ -60,11 +60,11 @@ docker compose up -d --no-build
 
 Soubor `.tar` lze také importovat v Container Station (Images → Import) a kontejner vytvořit klikáním: port `8580`, svazek `/data` namapovaný na složku na QNAPu.
 
-Aplikace běží na `http://IP-QNAPu:8580`. První přihlášení: **admin / admin** – aplikace si hned vynutí změnu hesla. (Vlastní počáteční heslo lze zadat proměnnou `HWSW_ADMIN_PASSWORD` v `docker-compose.yml`.)
+Aplikace běží na `https://IP-QNAPu:8580` (vlastní certifikát – prohlížeč se poprvé zeptá na výjimku, viz [HTTPS](#https)). První přihlášení: **admin / admin** – aplikace si hned vynutí změnu hesla. (Vlastní počáteční heslo lze zadat proměnnou `HWSW_ADMIN_PASSWORD` v `docker-compose.yml`.)
 
 ## První nastavení
 
-1. **Nastavení → Server**: vyplňte adresu, na které aplikaci uvidí počítače v síti (např. `http://192.168.1.10:8580`).
+1. **Nastavení → Server**: vyplňte adresu, na které aplikaci uvidí počítače v síti (např. `https://192.168.1.10:8580`).
 2. **Nastavení → Active Directory**: řadič domény, účet pro čtení (běžný doménový účet stačí), tlačítko *Vyzkoušet připojení*.
 3. **Nastavení → Sken IP rozsahu**: zadejte rozsahy (`192.168.1.0/24`, `10.0.5.10-10.0.5.80`).
 4. **Skenování**: spusťte obě úlohy ručně a zkontrolujte výsledek.
@@ -79,7 +79,15 @@ Výchozí je běžné mapování portu. Pro přesnější zjišťování MAC adr
 
 ### HTTPS
 
-Aplikace mluví HTTP. Pro přístup mimo důvěryhodnou síť před ni postavte reverzní proxy s certifikátem (QNAP: *Ovládací panely → Síť → Reverzní proxy*). Agent na Windows vyžaduje certifikát, kterému počítače důvěřují.
+Aplikace běží rovnou na HTTPS. Při prvním startu si vytvoří vlastní certifikát (platí 10 let) do `data/tls/`.
+
+- **Agenti** certifikát ověřují podle otisku, který je součástí instalačního příkazu. Na počítače se nic neinstaluje a spojení nejde podvrhnout jiným certifikátem.
+- **Prohlížeč** zobrazí při první návštěvě varování, protože certifikát nevydala známá autorita. Buď potvrďte výjimku, nebo si certifikát stáhněte (stránka *Agent pro Windows*) a přidejte ho mezi důvěryhodné. Aby pak seděla adresa, uveďte ji před prvním startem v `HWSW_TLS_NAMES` v `docker-compose.yml`.
+- **Vlastní certifikát** (např. z firemní autority): nahraďte soubory `data/tls/cert.pem` a `data/tls/key.pem` a restartujte kontejner. Agenti, kteří certifikátu důvěřují přes Windows, fungují dál; ostatní je potřeba nainstalovat znovu, protože se změnil otisk.
+- **Nový certifikát**: smažte `data/tls/` a restartujte. Agenty je pak nutné nainstalovat znovu.
+- **Za reverzní proxy**, která šifruje sama, lze vlastní HTTPS vypnout proměnnou `HWSW_TLS: "off"`.
+
+Složka `data/tls/` není součástí kompletní zálohy stahované z webu; zálohuje ji skript `backup-full.sh` (celá složka `data`). Bez ní vznikne po obnově nový certifikát.
 
 ## Aktualizace
 
@@ -122,7 +130,8 @@ Všechny zálohy se dělají za běhu přes SQLite backup API (konzistentní sn�
 - Role *administrátor* a *uživatel*; uživatel se dostane jen k přiděleným pohledům (kontroluje server, ne jen rozhraní).
 - Hesla uživatelů: PBKDF2-SHA256. Hesla k AD/WinRM: šifrovaná klíčem v datovém svazku.
 - Agenti se prokazují tokenem. Token je v instalačním příkazu – kdo ho zná, může posílat data. Na počítačích je skript čitelný jen pro SYSTEM a správce. Token lze kdykoli vyměnit (Agent → *Vygenerovat nový token*).
-- Agent běží pod účtem SYSTEM. Automatická aktualizace agentů je proto ve výchozím stavu **vypnutá**; zapínejte ji jen s HTTPS nebo v důvěryhodné síti.
+- Spojení prohlížeče i agentů je šifrované (HTTPS); agent ověřuje certifikát serveru podle otisku.
+- Agent běží pod účtem SYSTEM. Automatická aktualizace agentů je proto ve výchozím stavu **vypnutá**.
 - Licenční klíče vidí celé jen administrátor.
 
 ## Vyzkoušení bez Dockeru a bez Windows
@@ -132,7 +141,7 @@ Všechny zálohy se dělají za běhu přes SQLite backup API (konzistentní sn�
 ```
 
 ```bash
-python3 scripts/demo_data.py http://localhost:8580 TOKEN
+python3 scripts/demo_data.py https://localhost:8580 TOKEN
 ```
 
 Token najdete ve webu na stránce *Agent pro Windows*. Skript nahraje 14 ukázkových počítačů s monitory, softwarem a USB událostmi.

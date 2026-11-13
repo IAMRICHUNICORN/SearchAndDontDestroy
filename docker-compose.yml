@@ -11,8 +11,13 @@ services:
       TZ: Europe/Prague
       # Heslo uctu "admin" pri uplne prvnim startu (jinak "admin"; zmena je pri prihlaseni povinna).
       # HWSW_ADMIN_PASSWORD: "zmente-me"
+      # Aplikace bezi na HTTPS s vlastnim certifikatem (vznikne pri prvnim startu v ./data/tls).
+      # Jmena a adresy, pod kterymi ji budete otevirat - zapisou se do certifikatu pri jeho vytvoreni:
+      # HWSW_TLS_NAMES: "nas.firma.local,192.168.1.10"
+      # Za reverzni proxy, ktera sifruje sama, lze vlastni HTTPS vypnout:
+      # HWSW_TLS: "off"
     volumes:
-      - ./data:/data          # databaze + zalohy + sifrovaci klic; prezije jakoukoli aktualizaci image
+      - ./data:/data          # databaze + zalohy + sifrovaci klic + certifikat; prezije jakoukoli aktualizaci image
 
     # Varianta s primym pristupem do site (presnejsi zjisteni MAC adres pri skenu):
     # zakomentujte "ports:" vyse a odkomentujte nasledujici radek.
