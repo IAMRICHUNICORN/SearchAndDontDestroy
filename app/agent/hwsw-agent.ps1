@@ -184,20 +184,28 @@ function Get-EdidInfo([byte[]]$E) {
 }
 
 function Get-MonitorsFromRegistry {
-    # Zaloha, kdyz WMI monitory nevrati: EDID primo z registru Windows (bez nutnosti prihlaseneho uzivatele).
-    $list = @()
-    $root = 'HKLM:\SYSTEM\CurrentControlSet\Enum\DISPLAY'
-    foreach ($model in @(Get-ChildItem $root -ErrorAction SilentlyContinue)) {
-        if ($model.PSChildName -match '^(Default_Monitor|MS_)') { continue }
-        foreach ($inst in @(Get-ChildItem $model.PSPath -ErrorAction SilentlyContinue)) {
-            # "Control" existuje jen u prave pripojenych monitoru (stare zaznamy ho nemaji)
-            if (-not (Test-Path (Join-Path $inst.PSPath 'Control'))) { continue }
-            try {
-                $edid = (Get-ItemProperty -Path (Join-Path $inst.PSPath 'Device Parameters') -Name EDID -ErrorAction Stop).EDID
-                $info = Get-EdidInfo ([byte[]]$edid)
-                if ($info) { $list += $info }
-            } catch {}
+    # Zaloha, kdyz WMI monitory nevrati: EDID primo z registru Windows.
+    # Prave pripojene monitory zna seznam zarizeni Windows (obsahuje jen pritomna zarizeni);
+    # kdyz ho nelze nacist, vezmou se vsechny zaznamy krome obecnych "Default_Monitor".
+    $root = 'HKLM:\SYSTEM\CurrentControlSet\Enum'
+    $paths = @()
+    foreach ($d in (Wmi 'Win32_PnPEntity' "PNPClass='Monitor'")) {
+        $id = [string]$d.PNPDeviceID
+        if ($id -like 'DISPLAY\*') { $paths += ($root + '\' + $id) }
+    }
+    if ($paths.Count -eq 0) {
+        foreach ($model in @(Get-ChildItem ($root + '\DISPLAY') -ErrorAction SilentlyContinue)) {
+            if ($model.PSChildName -match '^Default_Monitor') { continue }
+            foreach ($inst in @(Get-ChildItem $model.PSPath -ErrorAction SilentlyContinue)) { $paths += $inst.PSPath }
         }
+    }
+    $list = @()
+    foreach ($path in $paths) {
+        try {
+            $edid = (Get-ItemProperty -Path ($path + '\Device Parameters') -Name EDID -ErrorAction Stop).EDID
+            $info = Get-EdidInfo ([byte[]]$edid)
+            if ($info) { $list += $info }
+        } catch {}
     }
     return ,$list
 }
