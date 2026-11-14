@@ -125,8 +125,29 @@ async function download(url, body, filename) {
 
 const ACTION_BADGE = { 'připojeno': 'ok', 'nainstalováno': 'ok', 'odpojeno': '', 'odebráno': 'warn' };
 
+function ago(ts) {
+  if (typeof ts !== 'string' || !ts) return '';
+  const min = Math.max(0, Math.round((Date.now() - new Date(ts.replace(' ', 'T') + 'Z').getTime()) / 60000));
+  if (min < 2) return 'právě teď';
+  if (min < 60) return 'před ' + min + ' min';
+  if (min < 48 * 60) return 'před ' + Math.round(min / 60) + ' h';
+  return 'před ' + Math.round(min / 1440) + ' dny';
+}
+
+const AGENT_DOT = { 'odesílá': 'on', 'neaktivní': 'warn', 'nikdy': 'bad' };
+
 function cell(col, row) {
   const v = row[col.key];
+  if (col.key === 'agent_state') {
+    const td = el('td', { class: 'nw' });
+    if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
+    td.title = (v === 'nikdy' ? 'Agent zatím neposlal žádná data' : 'Poslední data: ' + fmtDate(row._inv)) +
+      (row._agent ? ' · agent ' + row._agent : '');
+    return add(td, [el('span', { class: 'dot ' + AGENT_DOT[v] }), v === 'nikdy' ? 'nikdy' : ago(row._inv)]);
+  }
+  if (col.key === 'hostname' && '_host' in row && !row._host && v) {
+    return add(el('td', { class: 'nw muted' }), [v]);
+  }
   const nw = col.type === 'date' || ['hostname', 'ip', 'device_ip', 'mac', 'serial', 'online'].includes(col.key);
   const td = el('td', { class: col.type === 'num' ? 'num' : (nw ? 'nw' : '') });
   if (col.key === 'online') return add(td, [el('span', { class: 'dot' + (v ? ' on' : '') }), v ? 'online' : 'offline']);
@@ -148,7 +169,16 @@ function columnPicker(entity, selected) {
   const list = el('ul', { class: 'col-list' });
   const adder = el('select');
   function draw() {
-    list.replaceChildren(...cols.map((k, i) => el('li', null, el('span', null, label(k)),
+    list.replaceChildren(...cols.map((k, i) => el('li', { draggable: 'true', title: 'Přetáhněte myší na jiné místo', 'data-i': i,
+      ondragstart: (e) => { e.dataTransfer.setData('text/plain', String(i)); e.dataTransfer.effectAllowed = 'move'; },
+      ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop'); },
+      ondragleave: (e) => e.currentTarget.classList.remove('drop'),
+      ondrop: (e) => {
+        e.preventDefault();
+        const from = parseInt(e.dataTransfer.getData('text/plain'), 10);
+        if (!isNaN(from) && from !== i) { cols.splice(i, 0, cols.splice(from, 1)[0]); }
+        draw();
+      } }, el('span', { class: 'grip', 'aria-hidden': 'true' }, '⠿'), el('span', null, label(k)),
       el('button', { class: 'mini', disabled: i === 0, title: 'Posunout výš', onclick: () => { cols.splice(i - 1, 0, cols.splice(i, 1)[0]); draw(); } }, '↑'),
       el('button', { class: 'mini', disabled: i === cols.length - 1, title: 'Posunout níž', onclick: () => { cols.splice(i + 1, 0, cols.splice(i, 1)[0]); draw(); } }, '↓'),
       el('button', { class: 'mini', title: 'Odebrat', onclick: () => { cols.splice(i, 1); draw(); } }, '✕'))));
@@ -165,15 +195,50 @@ function filterBuilder(entity, filters) {
   const ops = S.schema.operators;
   const box = el('div');
   const rows = [];
+  const OPS_BY_TYPE = {
+    text: ['contains', 'not_contains', 'eq', 'ne', 'starts', 'in', 'empty', 'not_empty'],
+    secret: ['contains', 'eq', 'empty', 'not_empty'],
+    num: ['eq', 'ne', 'gt', 'lt', 'in', 'empty', 'not_empty'],
+    bool: ['eq', 'ne'],
+    date: ['older_h', 'newer_h', 'contains', 'gt', 'lt', 'empty', 'not_empty'],
+  };
+  const typeOf = (key) => (defs.find((d) => d.key === key) || {}).type || 'text';
+  const suggest = {};
+  async function suggestions(key) {
+    if (suggest[key]) return suggest[key];
+    try { suggest[key] = (await api('GET', '/api/distinct?entity=' + encodeURIComponent(entity) + '&col=' + encodeURIComponent(key))).values; }
+    catch (e) { suggest[key] = []; }
+    return suggest[key];
+  }
+  let listSeq = 0;
   function addRow(f) {
     const col = el('select', null, defs.map((d) => el('option', { value: d.key, selected: f && f.col === d.key }, d.label)));
-    const op = el('select', null, Object.entries(ops).map(([k, l]) => el('option', { value: k, selected: f && f.op === k }, l)));
+    const op = el('select');
     const val = el('input', { value: f ? f.value : '', placeholder: 'hodnota' });
+    const listId = 'fl' + (++listSeq);
+    const list = el('datalist', { id: listId });
+    val.setAttribute('list', listId);
     const item = { col, op, val };
-    const line = el('div', { class: 'filter-row' }, col, op, val,
+    const sync = async (keepOp) => {
+      const type = typeOf(col.value);
+      const wanted = OPS_BY_TYPE[type] || OPS_BY_TYPE.text;
+      const cur = keepOp || op.value;
+      op.replaceChildren(...wanted.map((k) => el('option', { value: k, selected: k === cur }, ops[k])));
+      const noVal = op.value === 'empty' || op.value === 'not_empty';
+      val.style.display = noVal ? 'none' : '';
+      val.placeholder = type === 'bool' ? 'ano / ne' : (op.value === 'older_h' || op.value === 'newer_h') ? 'počet hodin'
+        : op.value === 'in' ? 'např. notebook, server' : 'hodnota';
+      list.replaceChildren();
+      if (type === 'bool') ['ano', 'ne'].forEach((v) => list.append(el('option', { value: v })));
+      else if (type === 'text' && op.value !== 'in') (await suggestions(col.value)).forEach((v) => list.append(el('option', { value: v })));
+    };
+    col.addEventListener('change', () => { op.value = ''; sync(); });
+    op.addEventListener('change', () => sync(op.value));
+    const line = el('div', { class: 'filter-row' }, col, op, val, list,
       el('button', { class: 'mini', onclick: () => { rows.splice(rows.indexOf(item), 1); line.remove(); } }, '✕'));
     rows.push(item);
     box.append(line);
+    sync(f ? f.op : null);
   }
   (filters || []).forEach(addRow);
   const node = el('div', null, box, el('button', { class: 'mini', onclick: () => addRow(null) }, '+ přidat podmínku'));
@@ -217,25 +282,43 @@ function dataTable(opts) {
     if (seq !== st.seq) return;
     if (opts.viewId && !st.sort) { st.sort = data.sort; st.sortDir = data.sort_dir; }
     const rowClick = opts.onRow && (opts.rowClickable ? opts.rowClickable(data) : true);
-    thead.replaceChildren(el('tr', null, data.columns.map((c) => el('th', {
+    const keys = data.columns.map((c) => c.key);
+    const moveCol = (from, to) => {
+      if (from === to || from < 0 || to < 0) return;
+      const next = keys.slice();
+      next.splice(to, 0, next.splice(from, 1)[0]);
+      st.columns = next;
+      load();
+    };
+    thead.replaceChildren(el('tr', null, data.columns.map((c, ci) => el('th', Object.assign({
       class: 'sortable' + (c.type === 'num' ? ' num' : ''),
       onclick: () => {
         if (st.sort === c.key) st.sortDir = st.sortDir === 'asc' ? 'desc' : 'asc';
         else { st.sort = c.key; st.sortDir = 'asc'; }
         st.page = 1; load();
-      } }, c.label, st.sort === c.key ? (st.sortDir === 'desc' ? ' ▼' : ' ▲') : ''))));
+      } }, opts.adhoc ? {
+      draggable: 'true', title: 'Klikněte pro seřazení, přetažením změníte pořadí sloupce',
+      ondragstart: (e) => { e.dataTransfer.setData('text/plain', 'col:' + ci); e.dataTransfer.effectAllowed = 'move'; },
+      ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('drop'); },
+      ondragleave: (e) => e.currentTarget.classList.remove('drop'),
+      ondrop: (e) => {
+        e.preventDefault();
+        const m = /^col:(\d+)$/.exec(e.dataTransfer.getData('text/plain'));
+        if (m) moveCol(parseInt(m[1], 10), ci);
+      },
+    } : {}), c.label, st.sort === c.key ? (st.sortDir === 'desc' ? ' ▼' : ' ▲') : ''))));
     tbody.replaceChildren(...(data.rows.length ? data.rows.map((r) => el('tr', {
       class: rowClick ? 'click' : '', onclick: rowClick ? () => opts.onRow(r, data) : null,
     }, data.columns.map((c) => cell(c, r)))) : [el('tr', null, el('td', { class: 'empty', colspan: data.columns.length },
       st.search || st.filters.length ? 'Podmínkám nic neodpovídá' : (opts.emptyText || 'Zatím žádná data')))]));
     const pages = Math.max(1, Math.ceil(data.total / data.page_size));
-    pager.replaceChildren(
+    pager.replaceChildren(...[
       el('span', null, 'Celkem ' + data.total),
       pages > 1 ? el('button', { class: 'mini', disabled: st.page <= 1, onclick: () => { st.page--; load(); } }, '‹ Předchozí') : null,
       pages > 1 ? el('span', null, 'Strana ' + st.page + ' z ' + pages) : null,
-      pages > 1 ? el('button', { class: 'mini', disabled: st.page >= pages, onclick: () => { st.page++; load(); } }, 'Další ›') : null);
-    chips.replaceChildren(...st.filters.map((f, i) => el('span', { class: 'chip' }, filterLabel(entity, f),
-      opts.adhoc ? el('button', { 'aria-label': 'Zrušit filtr', onclick: () => { st.filters.splice(i, 1); st.page = 1; load(); } }, '✕') : null)));
+      pages > 1 ? el('button', { class: 'mini', disabled: st.page >= pages, onclick: () => { st.page++; load(); } }, 'Další ›') : null].filter(Boolean));
+    chips.replaceChildren(...st.filters.map((f, i) => f.tab ? null : el('span', { class: 'chip' }, filterLabel(entity, f),
+      opts.adhoc ? el('button', { 'aria-label': 'Zrušit filtr', onclick: () => { st.filters.splice(i, 1); st.page = 1; load(); } }, '✕') : null)).filter(Boolean));
   }
 
   const tools = [search];
@@ -261,7 +344,9 @@ function dataTable(opts) {
   const node = el('div', null, el('div', { class: 'toolbar' }, tools), chips,
     el('div', { class: 'table-wrap' }, el('table', null, thead, tbody)), pager);
   load();
-  return { node, reload: load, setFilters: (f) => { st.filters = f; st.page = 1; load(); } };
+  return { node, reload: load, setFilters: (f) => { st.filters = f; st.page = 1; load(); },
+    setView: (v) => { st.filters = v.filters || []; st.columns = v.columns || []; st.sort = v.sort || ''; st.sortDir = v.sortDir || '';
+      st.search = ''; search.value = ''; st.page = 1; load(); } };
 }
 
 // ----------------------------------------------------------- prihlaseni
@@ -440,9 +525,43 @@ PAGES.zarizeni = async (main, parts, params) => {
   if (parts[0]) return deviceDetail(main, parts[0], params.get('view'));
   if (!isAdmin()) return PAGES.prehled(main);
   pageHead(main, 'Zařízení', 'Vše, co bylo nalezeno v doméně, v IP rozsahu nebo nahlášeno agentem');
-  const t = dataTable({ entity: 'devices', adhoc: true, onRow: (r) => { location.hash = '#/zarizeni/' + r._id; } });
-  main.append(t.node);
-  S.live = (ev) => { if (ev.type === 'job') t.reload(); };
+  const PC_COLS = ['hostname', 'agent_state', 'logged_user', 'os_name', 'model', 'online', 'ip'];
+  const NET_COLS = ['hostname', 'device_type', 'online', 'ip', 'mac', 'manufacturer', 'model'];
+  const TABS = [
+    ['pc', 'Počítače', 'computers', { filters: [{ col: 'is_computer', op: 'eq', value: 'ano', tab: true }], columns: PC_COLS, sort: 'agent_state', sortDir: 'asc' }],
+    ['never', 'Bez agenta', 'never', { filters: [{ col: 'agent_state', op: 'eq', value: 'nikdy', tab: true }], columns: PC_COLS, sort: 'hostname', sortDir: 'asc' }],
+    ['stale', 'Neaktivní agent', 'stale', { filters: [{ col: 'agent_state', op: 'eq', value: 'neaktivní', tab: true }], columns: PC_COLS, sort: 'last_inventory', sortDir: 'asc' }],
+    ['net', 'Síť a tiskárny', 'network', { filters: [{ col: 'is_computer', op: 'eq', value: 'ne', tab: true }], columns: NET_COLS, sort: 'ip', sortDir: 'asc' }],
+    ['all', 'Vše', 'total', { filters: [], columns: [], sort: '', sortDir: '' }],
+  ];
+  const t = dataTable({ entity: 'devices', adhoc: true, onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
+    filters: TABS[0][3].filters, columns: TABS[0][3].columns, sort: 'agent_state', sortDir: 'asc' });
+  const bar = el('div', { class: 'tabs', role: 'tablist' });
+  const info = el('div', { class: 'hint', style: 'margin-bottom:10px' });
+  const counts = {};
+  const buttons = TABS.map(([key, label, ck, view]) => {
+    const n = el('span', { class: 'count' });
+    counts[ck] = n;
+    const b = el('button', { role: 'tab', 'data-key': key, class: key === 'pc' ? 'active' : '', onclick: () => {
+      bar.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+      t.setView(view);
+    } }, label, ' ', n);
+    return b;
+  });
+  bar.append(...buttons);
+  main.append(bar, info, t.node);
+  async function summary() {
+    try {
+      const c = await api('GET', '/api/devices-summary');
+      Object.entries(counts).forEach(([k, n]) => { n.textContent = c[k] == null ? '' : c[k]; });
+      info.replaceChildren(
+        el('span', { class: 'dot on' }), 'odesílá data (do ' + c.stale_hours + ' h)   ',
+        el('span', { class: 'dot warn' }), 'agent neposlal data déle než ' + c.stale_hours + ' h   ',
+        el('span', { class: 'dot bad' }), 'agent nikdy neposlal data');
+    } catch (e) { /* souhrn je jen doplnek */ }
+  }
+  summary();
+  S.live = (ev) => { if (ev.type === 'job') { t.reload(); summary(); } };
 };
 
 function tabbed(main, tabs, initial) {
@@ -897,6 +1016,7 @@ PAGES.nastaveni = async (main) => {
       el('div', { class: 'form-grid' },
         text('offline_after_min', 'Považovat za offline po (min)', null, 'number'),
         text('agent_inventory_hours', 'Agent posílá úplnou inventuru každých (h)', null, 'number'),
+        text('agent_stale_hours', 'Agent je neaktivní (žlutě), když neposlal data déle než (h)', null, 'number'),
         text('usb_events_keep_days', 'Uchovávat historii USB a změn SW (dní)', null, 'number')),
       check('agent_autoupdate', 'Agenti se po aktualizaci serveru sami aktualizují'),
       el('div', { class: 'hint' }, 'Agent běží pod účtem SYSTEM. Automatickou aktualizaci zapínejte jen tehdy, když je aplikace dostupná přes HTTPS nebo v důvěryhodné síti.')),

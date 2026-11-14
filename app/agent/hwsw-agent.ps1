@@ -312,8 +312,20 @@ function Invoke-Safe([scriptblock]$Block, $Default) {
     try { return (& $Block) } catch { return $Default }
 }
 
+function Test-Elevated {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        return (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
 function Get-Security {
     $sec = @{}
+    $elevated = Test-Elevated
+    # cas jednotlivych casti (vypisuje je rezim test)
+    $script:SecTimes = New-Object System.Collections.ArrayList
+    $swStep = [Diagnostics.Stopwatch]::StartNew()
+    $mark = { param([string]$Name) [void]$script:SecTimes.Add(@{ name = $Name; ms = $swStep.ElapsedMilliseconds }); $swStep.Restart() }
     # BitLocker (WMI, funguje i na starsich Windows)
     $bl = @()
     foreach ($v in (Wmi 'Win32_EncryptableVolume' '' 'root\CIMV2\Security\MicrosoftVolumeEncryption')) {
@@ -333,6 +345,7 @@ function Get-Security {
         $osVol = $bl | Where-Object { $_.drive -eq $sysDrive } | Select-Object -First 1
         if ($osVol) { if ($osVol.protected) { $sec.bitlocker_os = 'ano' } else { $sec.bitlocker_os = 'ne' } }
     }
+    & $mark 'BitLocker'
     # antivirus: Centrum zabezpeceni (jen stanice) a Windows Defender
     $av = @()
     foreach ($a in (Wmi 'AntiVirusProduct' '' 'root\SecurityCenter2')) {
@@ -341,6 +354,7 @@ function Get-Security {
         $av += @{ name = (Text $a.displayName); enabled = ((($state -shr 8) -band 16) -ne 0); up_to_date = (($state -band 255) -eq 0) }
     }
     $sec.antivirus = $av
+    & $mark 'Antivirus (Centrum zabezpeceni)'
     try {
         $mp = Get-MpComputerStatus -ErrorAction Stop
         $sig = ''
@@ -354,6 +368,7 @@ function Get-Security {
     elseif ($sec.defender -and $sec.defender.enabled) { $avText = 'Windows Defender' }
     elseif ($av.Count -gt 0 -or $sec.defender) { $avText = 'vypnuto' }
     $sec.antivirus_text = $avText
+    & $mark 'Windows Defender'
     # firewall
     $fw = @{}
     $base = 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy'
@@ -367,6 +382,7 @@ function Get-Security {
         $off = @($fw.Keys | Where-Object { -not $fw[$_] })
         if ($off.Count -eq 0) { $sec.firewall_text = 'zapnuto' } elseif ($off.Count -eq $fw.Count) { $sec.firewall_text = 'vypnuto' } else { $sec.firewall_text = 'castecne' }
     }
+    & $mark 'Firewall'
     # zavadeni systemu, Secure Boot, TPM
     $sb = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' 'UEFISecureBootEnabled'
     if ($null -ne $sb) {
@@ -389,13 +405,18 @@ function Get-Security {
             } else { $sec.tpm_text = 'ne' }
         } catch {}
     }
+    & $mark 'Secure Boot a TPM'
     # UAC, vzdalena plocha
     $uac = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
     if ($null -ne $uac) { $sec.uac = ([int]$uac -eq 1) }
-    $rdp = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections'
+    # Zasada (GPO) ma pred lokalnim nastavenim prednost - jinak by agent u pocitacu s RDP zapnutym zasadou hlasil "vypnuta"
+    $rdp = Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'fDenyTSConnections'
+    if ($null -eq $rdp) { $rdp = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' 'fDenyTSConnections' }
     if ($null -ne $rdp) { $sec.rdp_enabled = ([int]$rdp -eq 0) }
-    $nla = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'UserAuthentication'
+    $nla = Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication'
+    if ($null -eq $nla) { $nla = Get-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' 'UserAuthentication' }
     if ($null -ne $nla) { $sec.rdp_nla = ([int]$nla -eq 1) }
+    & $mark 'UAC a vzdalena plocha'
     # aktualizace
     $last = $null; $count = 0
     foreach ($h in (Wmi 'Win32_QuickFixEngineering')) {
@@ -405,6 +426,7 @@ function Get-Security {
             if ($null -eq $last -or $dt -gt $last) { $last = $dt }
         } catch {}
     }
+    & $mark 'Nainstalovane opravy (Win32_QuickFixEngineering)'
     $sec.hotfix_count = $count
     $sec.last_hotfix = ''
     if ($last) { $sec.last_hotfix = $last.ToString('yyyy-MM-dd') }
@@ -414,10 +436,18 @@ function Get-Security {
               (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
     $sec.pending_reboot = $reboot
     if ($reboot) { $sec.pending_reboot_text = 'ano' } else { $sec.pending_reboot_text = 'ne' }
+    & $mark 'Aktualizace a cekani na restart'
     # predpoved selhani disku podle S.M.A.R.T.
     $fail = $false
     foreach ($f in (Wmi 'MSStorageDriver_FailurePredictStatus' '' 'root\wmi')) { if ($f.PredictFailure) { $fail = $true } }
     $sec.disk_failure_predicted = $fail
+    & $mark 'S.M.A.R.T. (predpoved selhani disku)'
+    # Bez prav spravce BitLocker, TPM ani S.M.A.R.T. nelze spolehlive zjistit - radeji "nezjisteno" nez zavadejici "ne"
+    $sec.elevated = $elevated
+    if (-not $elevated) {
+        if ($sec.bitlocker_os -ne 'ano') { $sec.bitlocker_os = 'nezjisteno' }
+        if ($sec.tpm_text -ne 'ano' -and -not ($sec.tpm_text -like 'ano *')) { $sec.tpm_text = 'nezjisteno' }
+    }
     return $sec
 }
 
@@ -838,6 +868,7 @@ function Test-Agent {
     & $report 'Zabezpeceni (celkem)' { $script:sec = Get-Security; if ($script:sec) { 'zjisteno' } }
     if ($script:sec) {
         $s = $script:sec
+        foreach ($t in $script:SecTimes) { Write-Host ('          cas: {0,-52} {1} ms' -f $t.name, $t.ms) }
         & $report '  BitLocker (systemovy disk)' { $s.bitlocker_os }
         & $report '  Antivirus' { $s.antivirus_text }
         & $report '  Firewall' { $s.firewall_text }

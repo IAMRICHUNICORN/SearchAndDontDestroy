@@ -281,6 +281,20 @@ def query(body: dict = Body(...), user=Depends(admin_user)):
     return {"columns": meta, "rows": rows, "total": total, "page_size": size}
 
 
+@app.get("/api/devices-summary")
+def devices_summary(user=Depends(admin_user)):
+    with db.db() as conn:
+        return entities.agent_summary(conn)
+
+
+@app.get("/api/distinct")
+def distinct(entity: str, col: str, user=Depends(admin_user)):
+    if entity not in entities.ENTITIES:
+        raise HTTPException(400, "Neznámý typ dat")
+    with db.db() as conn:
+        return {"values": entities.distinct_values(conn, entity, col)}
+
+
 def _view_row(row, admin):
     item = {"id": row["id"], "name": row["name"], "description": row["description"], "entity": row["entity"],
             "entity_label": entities.ENTITIES.get(row["entity"], {}).get("label", row["entity"]),
@@ -654,7 +668,7 @@ def _merged_settings(conn, body):
 @app.put("/api/settings")
 def settings_put(body: dict = Body(...), user=Depends(admin_user)):
     numeric = {"ad_interval_min": (15, 10080), "scan_interval_min": (5, 10080), "winrm_interval_min": (60, 43200),
-               "agent_inventory_hours": (1, 168), "offline_after_min": (5, 1440), "backup_hour": (0, 23),
+               "agent_inventory_hours": (1, 168), "offline_after_min": (5, 1440), "agent_stale_hours": (1, 8760), "backup_hour": (0, 23),
                "backup_keep": (1, 365), "usb_events_keep_days": (7, 3650)}
     with db.db() as conn:
         for key in db.DEFAULT_SETTINGS:

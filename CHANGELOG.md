@@ -2,6 +2,17 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.3.0
+- Stranka Zarizeni: zalozky (Pocitace, Bez agenta, Neaktivni agent, Sit a tiskarny, Vse) s pocty; sloupec "Stav agenta"
+  (zelena = data do limitu, zluta = agent neposlal data dele nez limit, cervena = nikdy) a cas poslednich dat.
+  Limit (vychozi 72 h) je v Nastaveni. Prazdny nazev se nahradi IP adresou.
+- Sloupce tabulek jdou pridat, odebrat a presouvat mysi (v okne Sloupce i primo v zahlavi).
+- Filtry: operatory podle typu sloupce, "je jedno z", "starsi/novejsi nez (hodin)", nabidka existujicich hodnot,
+  nove sloupce (FQDN, Je to pocitac, Ucet v AD povolen).
+- Agent: vzdalena plocha (RDP) se cte i ze zasady GPO (drive hlasil "vypnuta", i kdyz bezela);
+  BitLocker a TPM bez prav spravce hlasi "nezjisteno" misto "ne"; rezim test vypisuje cas jednotlivych casti zabezpeceni.
+- Bez zmeny databaze. Samoaktualizace agentu je dale volitelna v Nastaveni (vychozi: vypnuto).
+
 ## 1.2.3
 - Opraveno pocitani v rezimu test; BitLocker a TPM maji zalozni zjisteni (Get-BitLockerVolume, Get-Tpm); TPM "nezjisteno" misto "ne".
 

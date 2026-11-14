@@ -529,6 +529,7 @@ DEFAULT_SETTINGS = {
     "agent_inventory_hours": "6",
     "agent_autoupdate": "0",
     "offline_after_min": "20",
+    "agent_stale_hours": "72",
     "backup_enabled": "1",
     "backup_hour": "2",
     "backup_keep": "14",

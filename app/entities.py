@@ -23,6 +23,19 @@ _DEVICE_REF = {
 _LIC_USED = ("(SELECT COUNT(DISTINCT s.device_id) FROM software s "
              "WHERE x.match_pattern <> '' AND s.name LIKE x.match_pattern)")
 
+_COMPUTER_TYPES = ("'počítač'", "'notebook'", "'server'", "'virtuální server'", "'virtuální počítač'",
+                   "'počítač (Windows)'")
+_IS_COMPUTER = ("CASE WHEN d.device_type IN (%s) OR COALESCE(d.agent_version, '') <> '' "
+                "OR COALESCE(d.last_inventory, '') <> '' THEN 1 ELSE 0 END" % ", ".join(_COMPUTER_TYPES))
+# __STALE__ se pri dotazu nahradi poctem hodin z Nastaveni (agent_stale_hours)
+_AGENT_STATE = ("CASE WHEN COALESCE(d.last_inventory, '') <> '' THEN "
+                "CASE WHEN d.last_inventory >= datetime('now', '-__STALE__ hours') THEN 'odesílá' ELSE 'neaktivní' END "
+                "WHEN %s = 1 THEN 'nikdy' ELSE '' END" % _IS_COMPUTER)
+# nejhorsi stav prvni: nikdy (0), neaktivni (1), odesila (2), bez agenta (3)
+_AGENT_STATE_ORDER = ("CASE WHEN COALESCE(d.last_inventory, '') <> '' THEN "
+                      "CASE WHEN d.last_inventory >= datetime('now', '-__STALE__ hours') THEN 2 ELSE 1 END "
+                      "WHEN %s = 1 THEN 0 ELSE 3 END" % _IS_COMPUTER)
+
 ENTITIES = {
     "devices": {
         "label": "Zařízení (HW a síť)",
@@ -30,8 +43,10 @@ ENTITIES = {
         "device_id": "d.id",
         "id": "d.id",
         "columns": {
-            "hostname": ("Název", "d.hostname", "text"),
+            "hostname": ("Název", "COALESCE(NULLIF(d.hostname, ''), d.ip)", "text"),
             "device_type": ("Typ", "d.device_type", "text"),
+            "agent_state": ("Stav agenta", _AGENT_STATE, "text"),
+            "is_computer": ("Je to počítač", _IS_COMPUTER, "bool"),
             "online": ("Online", "d.online", "bool"),
             "ip": ("IP adresa", "d.ip", "text"),
             "mac": ("MAC adresa", "d.mac", "text"),
@@ -74,6 +89,8 @@ ENTITIES = {
                                "(SELECT COUNT(*) FROM software s WHERE s.device_id = d.id)", "num"),
             "usb_count": ("Připojená USB",
                           "(SELECT COUNT(*) FROM usb_current c WHERE c.device_id = d.id)", "num"),
+            "fqdn": ("Plný název (FQDN)", "d.fqdn", "text"),
+            "ad_enabled": ("Účet v AD povolen", "d.ad_enabled", "bool"),
             "source": ("Zdroj dat", "d.source", "text"),
             "agent_version": ("Verze agenta", "d.agent_version", "text"),
             "first_seen": ("Poprvé viděn", "d.first_seen", "date"),
@@ -81,9 +98,12 @@ ENTITIES = {
             "last_inventory": ("Poslední inventura", "d.last_inventory", "date"),
             "note": ("Poznámka", "d.note", "text"),
         },
-        "default": ["hostname", "device_type", "online", "ip", "manufacturer", "model",
+        "default": ["hostname", "agent_state", "device_type", "online", "ip", "manufacturer", "model",
                     "os_name", "logged_user", "last_seen"],
         "sort": ("hostname", "asc"),
+        # skryte hodnoty radku (pro zobrazeni) a vlastni razeni
+        "extra": {"_inv": "d.last_inventory", "_agent": "d.agent_version", "_host": "d.hostname"},
+        "sort_expr": {"agent_state": _AGENT_STATE_ORDER},
     },
     "software": {
         "label": "Software – instalace",
@@ -220,8 +240,11 @@ OPERATORS = {
     "eq": "je rovno",
     "ne": "není rovno",
     "starts": "začíná na",
+    "in": "je jedno z (oddělte čárkou)",
     "gt": "větší než",
     "lt": "menší než",
+    "older_h": "starší než (hodin)",
+    "newer_h": "novější než (hodin)",
     "empty": "je prázdné",
     "not_empty": "není prázdné",
 }
@@ -262,6 +285,25 @@ def clean_filters(entity, filters):
     return out
 
 
+def stale_hours(conn):
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = 'agent_stale_hours'").fetchone()
+        return min(8760, max(1, int(float(row["value"])))) if row else 72
+    except Exception:
+        return 72
+
+
+def _resolve(conn, ent):
+    """Dosadi do SQL vyrazu hodnoty z Nastaveni (prah neaktivniho agenta)."""
+    if not any("__STALE__" in v[1] for v in ent["columns"].values()) and not ent.get("sort_expr"):
+        return ent
+    hours = str(stale_hours(conn))
+    out = dict(ent)
+    out["columns"] = {k: (v[0], v[1].replace("__STALE__", hours), v[2]) for k, v in ent["columns"].items()}
+    out["sort_expr"] = {k: v.replace("__STALE__", hours) for k, v in (ent.get("sort_expr") or {}).items()}
+    return out
+
+
 def _filter_sql(ent, f, params):
     expr, typ = ent["columns"][f["col"]][1], ent["columns"][f["col"]][2]
     op, value = f["op"], f["value"]
@@ -271,6 +313,29 @@ def _filter_sql(ent, f, params):
     if op == "not_empty":
         return "(%s IS NOT NULL AND %s <> '' AND %s <> 0)" % (expr, expr, expr) if typ in ("num", "bool") \
             else "(%s IS NOT NULL AND %s <> '')" % (expr, expr)
+    if op in ("older_h", "newer_h"):
+        try:
+            hours = max(0.0, float(str(value).replace(",", ".")))
+        except ValueError:
+            hours = 0.0
+        params.append("-%d minutes" % int(hours * 60))
+        return "(COALESCE(%s, '') <> '' AND %s %s datetime('now', ?))" % (expr, expr, "<" if op == "older_h" else ">=")
+    if op == "in":
+        items = [v.strip() for v in str(value).split(",") if v.strip()][:50]
+        if not items:
+            return "(1 = 0)"
+        if typ in ("num", "bool"):
+            nums = []
+            for v in items:
+                low = v.lower()
+                try:
+                    nums.append(float(v.replace(",", ".")))
+                except ValueError:
+                    nums.append(1.0 if low in ("ano", "true", "yes", "a") else 0.0)
+            params.extend(nums)
+            return "(COALESCE(%s, 0) IN (%s))" % (expr, ",".join("?" * len(nums)))
+        params.extend(items)
+        return "(COALESCE(%s, '') COLLATE NOCASE IN (%s))" % (expr, ",".join("?" * len(items)))
     if typ in ("num", "bool"):
         try:
             num = float(str(value).replace(",", "."))
@@ -297,7 +362,7 @@ def _filter_sql(ent, f, params):
 def run_query(conn, entity, columns=None, filters=None, search="", sort="", sort_dir="",
               limit=50, offset=0, show_secrets=False, only_device=None):
     """Vraci (sloupce, radky, celkovy pocet). Radky obsahuji navic _id a _device_id."""
-    ent = ENTITIES[entity]
+    ent = _resolve(conn, ENTITIES[entity])
     cols = clean_columns(entity, columns)
     params = []
     where = []
@@ -321,12 +386,16 @@ def run_query(conn, entity, columns=None, filters=None, search="", sort="", sort
     if sort not in ent["columns"]:
         sort, sort_dir = ent["sort"]
     direction = "DESC" if str(sort_dir).lower() == "desc" else "ASC"
-    sort_expr = ent["columns"][sort][1]
+    custom = (ent.get("sort_expr") or {}).get(sort)
+    sort_expr = custom or ent["columns"][sort][1]
     order = " ORDER BY %s %s, %s ASC" % (
-        sort_expr + (" COLLATE NOCASE" if ent["columns"][sort][2] == "text" else ""), direction, ent["id"])
+        sort_expr + (" COLLATE NOCASE" if not custom and ent["columns"][sort][2] == "text" else ""), direction, ent["id"])
 
     total = conn.execute("SELECT COUNT(*) FROM %s%s" % (ent["from"], where_sql), params).fetchone()[0]
     select = ["%s AS c%d" % (ent["columns"][k][1], i) for i, k in enumerate(cols)]
+    extra = ent.get("extra") or {}
+    for i, expr in enumerate(extra.values()):
+        select.append("%s AS x%d" % (expr, i))
     select.append("%s AS _id" % ent["id"])
     select.append("%s AS _device_id" % (ent["device_id"] or "NULL"))
     sql = "SELECT %s FROM %s%s%s" % (", ".join(select), ent["from"], where_sql, order)
@@ -337,6 +406,8 @@ def run_query(conn, entity, columns=None, filters=None, search="", sort="", sort
     rows = []
     for r in conn.execute(sql, qparams):
         item = {"_id": r["_id"], "_device_id": r["_device_id"]}
+        for i, name in enumerate(extra):
+            item[name] = r["x%d" % i]
         for i, k in enumerate(cols):
             val = r["c%d" % i]
             if ent["columns"][k][2] == "secret" and not show_secrets and val:
@@ -364,3 +435,31 @@ def to_csv(meta, rows):
             line.append(v)
         writer.writerow(line)
     return ("﻿" + buf.getvalue()).encode("utf-8")
+
+
+def agent_summary(conn):
+    """Pocty pro zalozky na strance Zarizeni."""
+    ent = _resolve(conn, ENTITIES["devices"])
+    state, comp = ent["columns"]["agent_state"][1], ent["columns"]["is_computer"][1]
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "COALESCE(SUM(%s = 1), 0) AS computers, "
+        "COALESCE(SUM(%s = 'odesílá'), 0) AS ok, "
+        "COALESCE(SUM(%s = 'neaktivní'), 0) AS stale, "
+        "COALESCE(SUM(%s = 'nikdy'), 0) AS never "
+        "FROM devices d" % (comp, state, state, state)).fetchone()
+    out = {k: int(row[k]) for k in ("total", "computers", "ok", "stale", "never")}
+    out["network"] = out["total"] - out["computers"]
+    out["stale_hours"] = stale_hours(conn)
+    return out
+
+
+def distinct_values(conn, entity, col, limit=100):
+    """Navrhy hodnot pro filtr (jen textove/logicke sloupce)."""
+    ent = _resolve(conn, ENTITIES[entity])
+    if col not in ent["columns"] or ent["columns"][col][2] != "text":
+        return []
+    expr = ent["columns"][col][1]
+    sql = ("SELECT DISTINCT %s AS v FROM %s WHERE %s IS NOT NULL AND %s <> '' ORDER BY v COLLATE NOCASE LIMIT ?"
+           % (expr, ent["from"], expr, expr))
+    return [str(r["v"]) for r in conn.execute(sql, (int(limit),))]

@@ -119,6 +119,11 @@ label.check { display: flex; gap: 8px; align-items: center; margin-bottom: 10px;
 .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 6px; }
 .dot.on { background: var(--ok); }
+.dot.warn { background: #e6b422; }
+.dot.bad { background: #e5534b; }
+.tabs .count { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 2px; }
+.tabs .count:not(:empty)::before { content: '('; }
+.tabs .count:not(:empty)::after { content: ')'; }
 
 /* tabulky */
 .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
@@ -202,3 +207,8 @@ td.empty { text-align: center; color: var(--muted); padding: 28px; }
   .filter-row { grid-template-columns: 1fr; }
   .toolbar input[type=search] { width: 100%; }
 }
+
+.col-list li[draggable] { cursor: grab; }
+.col-list li.drop, th.drop { outline: 2px dashed var(--accent); outline-offset: -2px; }
+.col-list li span.grip { flex: 0 0 auto; color: var(--muted); margin-right: 4px; user-select: none; }
+th[draggable] { cursor: grab; }
