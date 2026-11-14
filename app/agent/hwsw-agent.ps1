@@ -319,6 +319,13 @@ function Get-Security {
     foreach ($v in (Wmi 'Win32_EncryptableVolume' '' 'root\CIMV2\Security\MicrosoftVolumeEncryption')) {
         $bl += @{ drive = (Text $v.DriveLetter); protected = ([int]$v.ProtectionStatus -eq 1) }
     }
+    if ($bl.Count -eq 0) {
+        try {
+            foreach ($v in @(Get-BitLockerVolume -ErrorAction Stop)) {
+                $bl += @{ drive = (Text $v.MountPoint); protected = (([string]$v.ProtectionStatus) -match '^(On|1)$') }
+            }
+        } catch {}
+    }
     $sec.bitlocker = $bl
     $sec.bitlocker_os = ''
     if ($bl.Count -gt 0) {
@@ -372,7 +379,16 @@ function Get-Security {
         try { $ver = Text ((([string]$tpm.SpecVersion) -split ',')[0]) } catch {}
         $sec.tpm = @{ enabled = [bool]$tpm.IsEnabled_InitialValue; activated = [bool]$tpm.IsActivated_InitialValue; version = $ver }
         if ($sec.tpm.enabled) { $sec.tpm_text = 'ano ' + $ver } else { $sec.tpm_text = 'vypnuto' }
-    } else { $sec.tpm_text = 'ne' }
+    } else {
+        $sec.tpm_text = 'nezjisteno'
+        try {
+            $gt = Get-Tpm -ErrorAction Stop
+            if ($gt.TpmPresent) {
+                $sec.tpm = @{ enabled = [bool]$gt.TpmEnabled; activated = [bool]$gt.TpmReady; version = '' }
+                if ($gt.TpmEnabled) { $sec.tpm_text = 'ano' } else { $sec.tpm_text = 'vypnuto' }
+            } else { $sec.tpm_text = 'ne' }
+        } catch {}
+    }
     # UAC, vzdalena plocha
     $uac = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' 'EnableLUA'
     if ($null -ne $uac) { $sec.uac = ([int]$uac -eq 1) }
@@ -780,7 +796,11 @@ function Test-Agent {
     # Rezim "test": nic se neodesila ani neinstaluje. Vypise, co se na tomto pocitaci podarilo zjistit.
     Write-Host ''
     Write-Host ('HWSW agent {0} - TEST (nic se neodesila)' -f $AgentVersion)
-    Write-Host ('PowerShell {0}, uzivatel {1}' -f $PSVersionTable.PSVersion, [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $isAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $adminText = 'ne - BitLocker a TPM se bez prav spravce nezjisti, spustte PowerShell jako spravce'
+    if ($isAdmin) { $adminText = 'ano' }
+    Write-Host ('PowerShell {0}, uzivatel {1}, spravce: {2}' -f $PSVersionTable.PSVersion, $id.Name, $adminText)
     Write-Host ''
     $script:okCount = 0; $script:badCount = 0
     $report = {
@@ -803,17 +823,17 @@ function Test-Agent {
     & $report 'Prihlaseny uzivatel' { Get-LoggedUser }
     & $report 'Procesor' { $c = @(Wmi 'Win32_Processor'); if ($c.Count) { Text $c[0].Name } }
     & $report 'Pametove moduly' { $m = @(Wmi 'Win32_PhysicalMemory'); if ($m.Count) { '{0} ks' -f $m.Count } }
-    & $report 'Disky' { $d = @(Get-Disks); if ($d.Count) { ($d | ForEach-Object { '{0} ({1})' -f $_.model, $_.health }) -join '; ' } }
-    & $report '  disk: opotrebeni / teplota' { $d = @(Get-Disks) | Where-Object { $null -ne $_.wear_pct -or $null -ne $_.temp_c } | Select-Object -First 1; if ($d) { 'opotrebeni {0} %, teplota {1} C' -f $d.wear_pct, $d.temp_c } }
+    & $report 'Disky' { $d = Get-Disks; $d = @($d); if ($d.Count) { ($d | ForEach-Object { '{0} ({1})' -f $_.model, $_.health }) -join '; ' } }
+    & $report '  disk: opotrebeni / teplota' { $d = Get-Disks; $d = @($d) | Where-Object { $null -ne $_.wear_pct -or $null -ne $_.temp_c } | Select-Object -First 1; if ($d) { 'opotrebeni {0} %, teplota {1} C' -f $d.wear_pct, $d.temp_c } }
     & $report 'Svazky' { $v = @(Wmi 'Win32_LogicalDisk' 'DriveType=3'); if ($v.Count) { '{0} ks' -f $v.Count } }
     & $report 'Grafika' { $g = @(Wmi 'Win32_VideoController'); if ($g.Count) { Text $g[0].Name } }
     & $report 'Sitove adaptery' { $n = @(Wmi 'Win32_NetworkAdapterConfiguration' 'IPEnabled=True'); if ($n.Count) { '{0} ks' -f $n.Count } }
     & $report 'Tiskarny' { $p = @(Wmi 'Win32_Printer'); if ($p.Count) { '{0} ks' -f $p.Count } }
     & $report 'Monitory (WMI)' { $m = @(Wmi 'WmiMonitorID' '' 'root\wmi'); if ($m.Count) { '{0} ks' -f $m.Count } }
-    & $report 'Monitory (registr/EDID)' { $m = @(Get-MonitorsFromRegistry); if ($m.Count) { ($m | ForEach-Object { '{0} {1} {2}"' -f $_.manufacturer, $_.model, $_.size_inch }) -join '; ' } }
-    & $report 'Monitory (vysledek agenta)' { $m = @(Get-Monitors); if ($m.Count) { '{0} ks' -f $m.Count } }
-    & $report 'Software' { $s = @(Get-Software); if ($s.Count) { '{0} polozek' -f $s.Count } }
-    & $report 'USB zarizeni' { $u = @(Get-UsbList); '{0} ks' -f $u.Count }
+    & $report 'Monitory (registr/EDID)' { $m = Get-MonitorsFromRegistry; $m = @($m); if ($m.Count) { ($m | ForEach-Object { '{0} {1} {2}"' -f $_.manufacturer, $_.model, $_.size_inch }) -join '; ' } }
+    & $report 'Monitory (vysledek agenta)' { $m = Get-Monitors; $m = @($m); if ($m.Count) { ($m | ForEach-Object { '{0} {1}' -f $_.manufacturer, $_.model }) -join '; ' } }
+    & $report 'Software' { $s = Get-Software; $s = @($s); if ($s.Count) { '{0} polozek' -f $s.Count } }
+    & $report 'USB zarizeni' { $u = Get-UsbList; $u = @($u); '{0} ks' -f $u.Count }
     $sec = $null
     & $report 'Zabezpeceni (celkem)' { $script:sec = Get-Security; if ($script:sec) { 'zjisteno' } }
     if ($script:sec) {

@@ -2,6 +2,9 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.2.3
+- Opraveno pocitani v rezimu test; BitLocker a TPM maji zalozni zjisteni (Get-BitLockerVolume, Get-Tpm); TPM "nezjisteno" misto "ne".
+
 ## 1.2.2
 - Rezim agenta "test": nic neodesila, jen vypise, ktere udaje se na pocitaci podarilo zjistit (stranka Agent pro Windows).
 

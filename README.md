@@ -53,8 +53,8 @@ docker compose up -d --build
 
 ```bash
 ./scripts/build-image.sh amd64        # nebo arm64 podle procesoru QNAPu
-# vznikne dist/hwsw-monitor-1.2.2-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
-docker load -i hwsw-monitor-1.2.2-amd64.tar
+# vznikne dist/hwsw-monitor-1.2.3-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
+docker load -i hwsw-monitor-1.2.3-amd64.tar
 docker compose up -d --no-build
 ```
 
@@ -93,7 +93,7 @@ Složka `data/tls/` není součástí kompletní zálohy stahované z webu; zál
 
 ```bash
 ./scripts/update.sh                                   # sestaví novou verzi ze zdrojů
-./scripts/update.sh hwsw-monitor-1.2.2-amd64.tar      # nebo nahraje hotový image
+./scripts/update.sh hwsw-monitor-1.2.3-amd64.tar      # nebo nahraje hotový image
 ```
 
 Co se děje s databází:
