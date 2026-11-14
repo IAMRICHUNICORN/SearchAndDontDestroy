@@ -307,9 +307,12 @@ function dataTable(opts) {
       st.columns = next;
       load();
     };
-    const selTh = opts.selectable ? el('th', { class: 'chk' }, el('input', { type: 'checkbox', 'aria-label': 'Označit vše na stránce',
-      checked: data.rows.length > 0 && data.rows.every((r) => st.sel.has(r._id)),
-      onchange: (e) => { data.rows.forEach((r) => { if (e.target.checked) st.sel.add(r._id); else st.sel.delete(r._id); }); st.all = false; load(); } })) : null;
+    st.pageRows = data.rows;
+    st.trs = [];
+    const headBox = el('input', { type: 'checkbox', class: 'cbx', 'aria-label': 'Označit vše na stránce', title: 'Označit vše na stránce',
+      onchange: (e) => { data.rows.forEach((r) => { if (e.target.checked) st.sel.add(r._id); else st.sel.delete(r._id); }); st.all = false; syncSel(); } });
+    st.headBox = headBox;
+    const selTh = opts.selectable ? el('th', { class: 'chk' }, headBox) : null;
     thead.replaceChildren(el('tr', null, selTh, data.columns.map((c, ci) => el('th', Object.assign({
       class: 'sortable' + (c.type === 'num' ? ' num' : ''),
       onclick: () => {
@@ -327,12 +330,24 @@ function dataTable(opts) {
         if (m) moveCol(parseInt(m[1], 10), ci);
       },
     } : {}), c.label, st.sort === c.key ? (st.sortDir === 'desc' ? ' ▼' : ' ▲') : ''))));
-    tbody.replaceChildren(...(data.rows.length ? data.rows.map((r) => el('tr', {
-      class: rowClick ? 'click' : '', onclick: rowClick ? () => opts.onRow(r, data) : null,
-    }, opts.selectable ? el('td', { class: 'chk', onclick: (e) => e.stopPropagation() }, el('input', { type: 'checkbox', 'aria-label': 'Označit řádek',
-      checked: st.sel.has(r._id) || st.all,
-      onchange: (e) => { if (e.target.checked) st.sel.add(r._id); else { st.sel.delete(r._id); st.all = false; } drawBar(); } })) : null,
-      data.columns.map((c) => cell(c, r)))) : [el('tr', null, el('td', { class: 'empty', colspan: data.columns.length + (opts.selectable ? 1 : 0) },
+    tbody.replaceChildren(...(data.rows.length ? data.rows.map((r, ri) => {
+      const box = el('input', { type: 'checkbox', class: 'cbx', 'aria-label': 'Označit řádek',
+        onclick: (e) => {
+          e.stopPropagation();
+          const on = e.target.checked;
+          if (e.shiftKey && st.last != null && st.last < data.rows.length) {
+            const a = Math.min(st.last, ri), b = Math.max(st.last, ri);
+            data.rows.slice(a, b + 1).forEach((x) => { if (on) st.sel.add(x._id); else st.sel.delete(x._id); });
+          } else if (on) st.sel.add(r._id); else st.sel.delete(r._id);
+          if (!on) st.all = false;
+          st.last = ri; syncSel();
+        } });
+      const tr = el('tr', { class: rowClick ? 'click' : '', onclick: rowClick ? () => opts.onRow(r, data) : null },
+        opts.selectable ? el('td', { class: 'chk', onclick: (e) => { if (e.target === e.currentTarget) { box.click(); } e.stopPropagation(); } }, box) : null,
+        data.columns.map((c) => cell(c, r)));
+      st.trs.push({ tr, box, id: r._id });
+      return tr;
+    }) : [el('tr', null, el('td', { class: 'empty', colspan: data.columns.length + (opts.selectable ? 1 : 0) },
       st.search || st.filters.length ? 'Podmínkám nic neodpovídá' : (opts.emptyText || 'Zatím žádná data')))]));
     const pages = Math.max(1, Math.ceil(data.total / data.page_size));
     pager.replaceChildren(...[
@@ -340,54 +355,101 @@ function dataTable(opts) {
       pages > 1 ? el('button', { class: 'mini', disabled: st.page <= 1, onclick: () => { st.page--; load(); } }, '‹ Předchozí') : null,
       pages > 1 ? el('span', null, 'Strana ' + st.page + ' z ' + pages) : null,
       pages > 1 ? el('button', { class: 'mini', disabled: st.page >= pages, onclick: () => { st.page++; load(); } }, 'Další ›') : null].filter(Boolean));
-    drawBar();
+    syncSel();
     chips.replaceChildren(...st.filters.map((f, i) => f.tab ? null : el('span', { class: 'chip' }, filterLabel(entity, f),
       opts.adhoc ? el('button', { 'aria-label': 'Zrušit filtr', onclick: () => { st.filters.splice(i, 1); st.page = 1; load(); } }, '✕') : null)).filter(Boolean));
   }
 
   const selBar = el('div', { class: 'selbar' });
   selBar.style.display = 'none';
-  async function ensureGroups(force) {
-    if (!st.groups || force) { try { st.groups = (await api('GET', '/api/groups')).groups; } catch (e) { st.groups = []; } }
+  const selBody = () => (st.all ? { select_all: { filters: st.filters, search: st.search } } : { device_ids: [...st.sel] });
+  const afterBulk = () => { st.sel.clear(); st.all = false; st.groups = null; load(); if (opts.onChanged) opts.onChanged(); };
+  async function ensureGroups() {
+    if (!st.groups) { try { st.groups = (await api('GET', '/api/groups')).groups; } catch (e) { st.groups = []; } }
     return st.groups;
   }
-  async function bulk(groupId, action) {
-    const body = { action };
-    if (st.all) body.select_all = { filters: st.filters, search: st.search }; else body.device_ids = [...st.sel];
-    const r = await api('POST', '/api/groups/' + groupId + '/members', body);
-    toast((action === 'add' ? 'Přidáno do skupiny: ' : 'Odebráno ze skupiny: ') + r.changed + ' zařízení', 'ok');
-    st.sel.clear(); st.all = false; st.groups = null; load();
-    if (opts.onGroupsChanged) opts.onGroupsChanged();
+  async function moveSection(section, label) {
+    const r = await api('POST', '/api/devices/section', Object.assign({ section }, selBody()));
+    toast(label + ': ' + r.changed + ' zařízení', 'ok'); afterBulk();
   }
-  async function drawBar() {
+  async function groupBulk(groupId, action) {
+    const r = await api('POST', '/api/groups/' + groupId + '/members', Object.assign({ action }, selBody()));
+    toast((action === 'add' ? 'Přidáno do skupiny: ' : 'Odebráno ze skupiny: ') + r.changed + ' zařízení', 'ok'); afterBulk();
+  }
+  // rozbalovaci nabidka (misto nativniho select)
+  function popMenu(label, build) {
+    const pop = el('div', { class: 'pop', role: 'menu' });
+    pop.style.display = 'none';
+    const btn = el('button', { class: 'menu-btn', 'aria-haspopup': 'true' }, label, el('span', { class: 'caret' }, '▾'));
+    const wrap = el('span', { class: 'pop-wrap' }, btn, pop);
+    const close = () => { pop.style.display = 'none'; document.removeEventListener('mousedown', outside, true); };
+    const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+    btn.addEventListener('click', async () => {
+      if (pop.style.display !== 'none') return close();
+      pop.replaceChildren(el('div', { class: 'muted small pad' }, 'Načítám…'));
+      pop.style.display = '';
+      document.addEventListener('mousedown', outside, true);
+      try { pop.replaceChildren(...(await build(close))); } catch (e) { close(); fail(e); }
+    });
+    return wrap;
+  }
+  const run = (fn, close) => async () => { close(); try { await fn(); } catch (e) { fail(e); } };
+  function drawBar() {
     if (!opts.selectable) return;
     const count = st.all ? st.total : st.sel.size;
     if (!count) { selBar.style.display = 'none'; selBar.replaceChildren(); return; }
     selBar.style.display = '';
-    const groups = await ensureGroups();
-    const pick = (label, action) => {
-      const sel = el('select', { 'aria-label': label }, el('option', { value: '' }, label),
-        ...groups.map((g) => el('option', { value: g.id }, g.name)),
-        action === 'add' ? el('option', { value: 'new' }, '+ nová skupina…') : null);
-      sel.addEventListener('change', async () => {
-        const v = sel.value; sel.value = '';
-        if (!v) return;
-        try {
-          if (v === 'new') {
-            const name = el('input', { placeholder: 'Název skupiny' });
-            modal('Nová skupina', field('Název', name), [{ label: 'Zrušit' }, { label: 'Vytvořit a přidat', primary: true, onclick: async () => {
-              const g = await api('POST', '/api/groups', { name: name.value }); await bulk(g.id, 'add');
-            } }]);
-          } else await bulk(v, action);
-        } catch (e) { fail(e); }
-      });
-      return sel;
-    };
+    const current = opts.currentSection ? opts.currentSection() : null;
+    const sectionMenu = popMenu('Přesunout do sekce', (close) => [
+      ...(opts.sections || []).map((n) => el('button', { class: 'pop-item', onclick: run(() => moveSection(n, 'Přesunuto do sekce ' + n), close) },
+        n, current === n ? el('span', { class: 'muted small' }, ' (současná)') : null)),
+      el('div', { class: 'pop-sep' }),
+      el('button', { class: 'pop-item', onclick: run(() => moveSection('', 'Odebráno ze sekce'), close) }, 'Bez sekce (jen ve Vše)'),
+      el('button', { class: 'pop-item', onclick: run(() => moveSection(null, 'Zařazeno automaticky'), close) }, 'Automaticky podle typu')]);
+    const groupMenu = popMenu('Skupiny', async (close) => {
+      const groups = await ensureGroups();
+      return [
+        ...(groups.length ? groups.map((g) => el('div', { class: 'pop-row' }, groupTag(g.name, g.color),
+          el('span', { class: 'right row' },
+            el('button', { class: 'mini', onclick: run(() => groupBulk(g.id, 'add'), close) }, 'Přidat'),
+            el('button', { class: 'mini', onclick: run(() => groupBulk(g.id, 'remove'), close) }, 'Odebrat'))))
+          : [el('div', { class: 'muted small pad' }, 'Zatím žádná skupina')]),
+        el('div', { class: 'pop-sep' }),
+        el('button', { class: 'pop-item', onclick: () => {
+          close();
+          const name = el('input', { placeholder: 'Název skupiny' });
+          modal('Nová skupina', field('Název', name), [{ label: 'Zrušit' }, { label: 'Vytvořit a přidat', primary: true, onclick: async () => {
+            const g = await api('POST', '/api/groups', { name: name.value }); await groupBulk(g.id, 'add');
+          } }]);
+        } }, '+ Nová skupina…')];
+    });
     selBar.replaceChildren(
-      el('strong', null, st.all ? 'Označeno všech ' + st.total + ' odpovídajících' : 'Označeno ' + count),
-      !st.all && st.total > count ? el('button', { class: 'link', onclick: () => { st.all = true; load(); } }, 'Označit všech ' + st.total + ' odpovídajících filtru') : null,
-      pick('Přidat do skupiny…', 'add'), pick('Odebrat ze skupiny…', 'remove'),
-      el('button', { class: 'mini', onclick: () => { st.sel.clear(); st.all = false; load(); } }, 'Zrušit výběr'));
+      el('span', { class: 'sel-count' }, '✓ ' + (st.all ? 'všech ' + st.total : count) + ' vybráno'),
+      !st.all && st.total > count ? el('button', { class: 'link', onclick: () => { st.all = true; syncSel(); } }, 'Vybrat všech ' + st.total + ' odpovídajících filtru') : null,
+      el('span', { class: 'sel-actions' }, sectionMenu, groupMenu,
+        current ? el('button', { class: 'menu-btn', title: 'Zařízení zůstanou jen ve Vše', onclick: run(() => moveSection('', 'Odebráno ze sekce ' + current), () => {}) }, 'Odebrat ze sekce ' + current) : null),
+      el('button', { class: 'clear', title: 'Zrušit výběr (Esc)', 'aria-label': 'Zrušit výběr', onclick: () => { st.sel.clear(); st.all = false; syncSel(); } }, '✕'));
+  }
+  // sladi zaskrtavatka, podbarveni radku a listu s aktualnim vyberem (bez nacitani dat)
+  function syncSel() {
+    (st.trs || []).forEach((x) => {
+      const on = st.all || st.sel.has(x.id);
+      x.box.checked = on; x.tr.classList.toggle('sel', on);
+    });
+    if (st.headBox) {
+      const rows = st.pageRows || [];
+      const n = rows.filter((r) => st.all || st.sel.has(r._id)).length;
+      st.headBox.checked = rows.length > 0 && n === rows.length;
+      st.headBox.indeterminate = n > 0 && n < rows.length;
+    }
+    drawBar();
+  }
+  if (opts.selectable) {
+    const onKey = (e) => {
+      if (!node.isConnected) { document.removeEventListener('keydown', onKey); return; }
+      if (e.key === 'Escape' && (st.sel.size || st.all) && !document.querySelector('.overlay')) { st.sel.clear(); st.all = false; syncSel(); }
+    };
+    document.addEventListener('keydown', onKey);
   }
 
   const tools = [search];
@@ -415,6 +477,7 @@ function dataTable(opts) {
   load();
   return { node, reload: load, setFilters: (f) => { st.filters = f; st.page = 1; st.all = false; load(); },
     refreshGroups: () => { st.groups = null; load(); },
+    selection: () => st.sel.size,
     setView: (v) => { st.filters = v.filters || []; st.columns = v.columns || []; st.sort = v.sort || ''; st.sortDir = v.sortDir || '';
       st.search = ''; search.value = ''; st.page = 1; st.all = false; st.sel.clear(); load(); } };
 }
@@ -655,32 +718,57 @@ PAGES.zarizeni = async (main, parts, params) => {
   pageHead(main, 'Zařízení', 'Vše, co bylo nalezeno v doméně, v IP rozsahu nebo nahlášeno agentem',
     el('button', { onclick: () => groupManager(() => { loadGroupSel(); t.refreshGroups(); }) }, 'Skupiny'));
   const PC_COLS = ['hostname', 'agent_state', 'logged_user', 'groups', 'os_name', 'model', 'online', 'ip'];
-  const NET_COLS = ['hostname', 'device_type', 'online', 'ip', 'mac', 'manufacturer', 'model'];
+  const NET_COLS = ['hostname', 'device_type', 'groups', 'online', 'ip', 'mac', 'manufacturer', 'model'];
+  const ALL_COLS = ['hostname', 'section', 'agent_state', 'device_type', 'logged_user', 'groups', 'online', 'ip', 'os_name', 'model'];
+  const SECTIONS = ['Počítače', 'Servery', 'IoT', 'Síť a tiskárny'];
+  const secFilter = (n) => [{ col: 'section', op: 'eq', value: n, tab: true }];
   const TABS = [
-    ['pc', 'Počítače', 'computers', { filters: [{ col: 'is_computer', op: 'eq', value: 'ano', tab: true }], columns: PC_COLS, sort: 'agent_state', sortDir: 'asc' }],
-    ['never', 'Bez agenta', 'never', { filters: [{ col: 'agent_state', op: 'eq', value: 'nikdy', tab: true }], columns: PC_COLS, sort: 'hostname', sortDir: 'asc' }],
-    ['stale', 'Neaktivní agent', 'stale', { filters: [{ col: 'agent_state', op: 'eq', value: 'neaktivní', tab: true }], columns: PC_COLS, sort: 'last_inventory', sortDir: 'asc' }],
-    ['net', 'Síť a tiskárny', 'network', { filters: [{ col: 'is_computer', op: 'eq', value: 'ne', tab: true }], columns: NET_COLS, sort: 'ip', sortDir: 'asc' }],
-    ['all', 'Vše', 'total', { filters: [], columns: [], sort: '', sortDir: '' }],
+    ['Počítače', secFilter('Počítače'), PC_COLS, 'agent_state'],
+    ['Servery', secFilter('Servery'), PC_COLS, 'agent_state'],
+    ['IoT', secFilter('IoT'), NET_COLS, 'ip'],
+    ['Síť a tiskárny', secFilter('Síť a tiskárny'), NET_COLS, 'ip'],
+    ['Vše', [], ALL_COLS, 'hostname'],
   ];
-  const t = dataTable({ entity: 'devices', adhoc: true, selectable: true, onGroupsChanged: () => loadGroupSel(), onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
-    filters: TABS[0][3].filters, columns: TABS[0][3].columns, sort: 'agent_state', sortDir: 'asc' });
+  const FLAGS = [
+    ['never', 'Bez agenta', 'never', { col: 'agent_state', op: 'eq', value: 'nikdy', tab: true }],
+    ['stale', 'Neaktivní agent', 'stale', { col: 'agent_state', op: 'eq', value: 'neaktivní', tab: true }],
+    ['nosec', 'Bez sekce', 'no_section', { col: 'section', op: 'eq', value: '', tab: true }],
+  ];
+  let curTab = TABS[0];
+  let curGroup = '';
+  const flags = new Set();
+  const viewOf = () => ({
+    filters: curTab[1].concat(FLAGS.filter((f) => flags.has(f[0])).map((f) => f[3]),
+      curGroup ? [{ col: 'groups', op: 'eq', value: curGroup, tab: true }] : []),
+    columns: curTab[2], sort: curTab[3], sortDir: 'asc' });
+  const t = dataTable({ entity: 'devices', adhoc: true, selectable: true, sections: SECTIONS,
+    currentSection: () => (SECTIONS.includes(curTab[0]) ? curTab[0] : null),
+    onChanged: () => { summary(); loadGroupSel(); },
+    onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
+    filters: viewOf().filters, columns: viewOf().columns, sort: 'agent_state', sortDir: 'asc' });
+  const applyView = () => t.setView(viewOf());
   const bar = el('div', { class: 'tabs', role: 'tablist' });
-  const info = el('div', { class: 'hint', style: 'margin-bottom:10px' });
   const counts = {};
-  const buttons = TABS.map(([key, label, ck, view]) => {
+  const tabButtons = TABS.map((tab) => {
     const n = el('span', { class: 'count' });
-    counts[ck] = n;
-    const b = el('button', { role: 'tab', 'data-key': key, class: key === 'pc' ? 'active' : '', onclick: () => {
-      bar.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-      curView = view; applyView();
+    counts[tab[0]] = n;
+    const b = el('button', { role: 'tab', class: tab === curTab ? 'active' : '', onclick: () => {
+      tabButtons.forEach((x) => x.classList.toggle('active', x === b));
+      curTab = tab; applyView();
+    } }, tab[0], ' ', n);
+    return b;
+  });
+  const flagCounts = {};
+  const flagButtons = FLAGS.map(([key, label, ck]) => {
+    const n = el('span', { class: 'count' });
+    flagCounts[ck] = n;
+    const b = el('button', { class: 'flag', 'aria-pressed': 'false', onclick: () => {
+      if (flags.has(key)) flags.delete(key); else flags.add(key);
+      b.classList.toggle('on', flags.has(key)); b.setAttribute('aria-pressed', flags.has(key) ? 'true' : 'false');
+      applyView();
     } }, label, ' ', n);
     return b;
   });
-  let curView = TABS[0][3];
-  let curGroup = '';
-  const applyView = () => t.setView(Object.assign({}, curView, {
-    filters: curView.filters.concat(curGroup ? [{ col: 'groups', op: 'eq', value: curGroup, tab: true }] : []) }));
   const groupSel = el('select', { 'aria-label': 'Skupina', onchange: () => { curGroup = groupSel.value; applyView(); } });
   async function loadGroupSel() {
     let groups = [];
@@ -691,13 +779,17 @@ PAGES.zarizeni = async (main, parts, params) => {
     groupSel.style.display = groups.length ? '' : 'none';
   }
   loadGroupSel();
-  bar.append(...buttons, el('span', { class: 'right' }, groupSel));
-  main.append(bar, info, t.node);
+  const info = el('div', { class: 'quick' });
+  bar.append(...tabButtons);
+  info.append(el('span', { class: 'muted small' }, 'Rychlé filtry:'), ...flagButtons, el('span', { class: 'right' }, groupSel));
+  const legend = el('div', { class: 'hint', style: 'margin-bottom:10px' });
+  main.append(bar, info, legend, t.node);
   async function summary() {
     try {
       const c = await api('GET', '/api/devices-summary');
-      Object.entries(counts).forEach(([k, n]) => { n.textContent = c[k] == null ? '' : c[k]; });
-      info.replaceChildren(
+      TABS.forEach((tab) => { counts[tab[0]].textContent = tab[0] === 'Vše' ? c.total : c.sections[tab[0]]; });
+      flagCounts.never.textContent = c.never; flagCounts.stale.textContent = c.stale; flagCounts.no_section.textContent = c.no_section;
+      legend.replaceChildren(
         el('span', { class: 'dot on' }), 'odesílá data (do ' + c.stale_hours + ' h)   ',
         el('span', { class: 'dot warn' }), 'agent neposlal data déle než ' + c.stale_hours + ' h   ',
         el('span', { class: 'dot bad' }), 'agent nikdy neposlal data');

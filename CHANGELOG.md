@@ -2,6 +2,15 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.5.0
+- Sekce zarizeni: Pocitace, Servery, IoT, Sit a tiskarny a Vse. Zarizeni se zarazuji automaticky podle typu, ale rucni
+  presun ma prednost (sloupec Sekce). "Odebrat ze sekce" nechava zarizeni jen ve Vse; "Automaticky podle typu" vraci puvodni zarazeni.
+- Stavy "Bez agenta", "Neaktivni agent" a "Bez sekce" jsou rychla tlacitka s pocty, kombinovatelna se sekci i skupinou.
+- Novy vzhled vyberu: vetsi zaskrtavatka, podbarveny vybrany radek, vyber rozsahu Shift+klik, pripnuta akcni lista
+  (Presunout do sekce, Skupiny, Odebrat ze sekce), Esc zrusi vyber.
+- Databaze: schema verze 4 (jeden novy sloupec u zarizeni; pred migraci vznikne overena zaloha).
+- Pozor: zarizeni bez typu nebo s typem "neznamé"/"Linux zarizeni" uz nespadaji do "Sit a tiskarny", ale zustanou bez sekce (jen ve Vse).
+
 ## 1.4.0
 - Skupiny zarizeni: tlacitko Skupiny na strance Zarizeni (vytvorit, prejmenovat, barva stitku, smazat);
   oznacovani radku zaskrtavatky a hromadne "Pridat do skupiny" / "Odebrat ze skupiny" (i "oznacit vsechna odpovidajici filtru");

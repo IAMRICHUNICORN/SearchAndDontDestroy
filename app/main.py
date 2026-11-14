@@ -409,6 +409,32 @@ def _group_body(body, current=None):
     return name, desc, color
 
 
+def _selected_ids(conn, body):
+    """Zarizeni z pozadavku: device_ids, nebo vse, co odpovida filtru (select_all)."""
+    sel = body.get("select_all")
+    if isinstance(sel, dict):
+        _m, rows, _t = entities.run_query(conn, "devices", ["hostname"], sel.get("filters"), sel.get("search"),
+                                          limit=5000)
+        return [r["_id"] for r in rows]
+    return [int(i) for i in (body.get("device_ids") or []) if str(i).isdigit()][:5000]
+
+
+@app.post("/api/devices/section")
+def devices_section(body: dict = Body(...), user=Depends(admin_user)):
+    """Presune zarizeni do sekce. section: nazev sekce, "" = bez sekce (jen ve Vse), null = automaticky podle typu."""
+    section = body.get("section")
+    if section is not None:
+        section = str(section)
+        if section != "" and section not in entities.SECTIONS:
+            raise HTTPException(400, "Neznámá sekce")
+    with db.db() as conn:
+        ids = _selected_ids(conn, body)
+        changed = 0
+        for device_id in ids:
+            changed += conn.execute("UPDATE devices SET section_manual = ? WHERE id = ?", (section, device_id)).rowcount
+    return {"ok": True, "changed": changed, "selected": len(ids)}
+
+
 def _group_name_taken(conn, name, except_id=None):
     return any(r["name"].casefold() == name.casefold() and r["id"] != except_id
                for r in conn.execute("SELECT id, name FROM device_groups"))
@@ -463,13 +489,7 @@ def groups_members(group_id: int, body: dict = Body(...), user=Depends(admin_use
     with db.db() as conn:
         if conn.execute("SELECT 1 FROM device_groups WHERE id = ?", (group_id,)).fetchone() is None:
             raise HTTPException(404, "Skupina neexistuje")
-        sel = body.get("select_all")
-        if isinstance(sel, dict):
-            _m, rows, _t = entities.run_query(conn, "devices", ["hostname"], sel.get("filters"), sel.get("search"),
-                                              limit=5000)
-            ids = [r["_id"] for r in rows]
-        else:
-            ids = [int(i) for i in (body.get("device_ids") or []) if str(i).isdigit()][:5000]
+        ids = _selected_ids(conn, body)
         changed = 0
         for device_id in ids:
             if action == "add":

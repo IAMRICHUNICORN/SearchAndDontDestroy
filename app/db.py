@@ -222,6 +222,10 @@ MIGRATIONS = [
         "ALTER TABLE devices ADD COLUMN last_login_at TEXT DEFAULT ''",
         "UPDATE devices SET last_login_at = COALESCE(NULLIF(last_seen, ''), '') WHERE logged_user <> ''",
     ],
+    [
+        # verze 1.5.0: sekce zarizeni. NULL = automaticky podle typu, '' = rucne bez sekce, jinak rucne zvolena sekce
+        "ALTER TABLE devices ADD COLUMN section_manual TEXT",
+    ],
 ]
 
 

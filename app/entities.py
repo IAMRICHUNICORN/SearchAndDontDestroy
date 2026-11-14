@@ -32,6 +32,14 @@ _AGENT_STATE = ("CASE WHEN COALESCE(d.last_inventory, '') <> '' THEN "
                 "CASE WHEN d.last_inventory >= datetime('now', '-__STALE__ hours') THEN 'odesílá' ELSE 'neaktivní' END "
                 "WHEN %s = 1 THEN 'nikdy' ELSE '' END" % _IS_COMPUTER)
 # nejhorsi stav prvni: nikdy (0), neaktivni (1), odesila (2), bez agenta (3)
+SECTIONS = ("Počítače", "Servery", "IoT", "Síť a tiskárny")
+# automaticke zarazeni podle typu; rucni volba (section_manual) ma vzdy prednost
+_SECTION_AUTO = ("CASE "
+                 "WHEN d.device_type IN ('server', 'virtuální server') THEN 'Servery' "
+                 "WHEN d.device_type IN ('tiskárna', 'síťové zařízení') THEN 'Síť a tiskárny' "
+                 "WHEN %s = 1 THEN 'Počítače' ELSE '' END" % _IS_COMPUTER)
+_SECTION = "COALESCE(d.section_manual, %s)" % _SECTION_AUTO
+
 _AGENT_STATE_ORDER = ("CASE WHEN COALESCE(d.last_inventory, '') <> '' THEN "
                       "CASE WHEN d.last_inventory >= datetime('now', '-__STALE__ hours') THEN 2 ELSE 1 END "
                       "WHEN %s = 1 THEN 0 ELSE 3 END" % _IS_COMPUTER)
@@ -51,6 +59,7 @@ ENTITIES = {
         "columns": {
             "hostname": ("Název", "COALESCE(NULLIF(d.hostname, ''), d.ip)", "text"),
             "device_type": ("Typ", "d.device_type", "text"),
+            "section": ("Sekce", _SECTION, "text"),
             "agent_state": ("Stav agenta", _AGENT_STATE, "text"),
             "is_computer": ("Je to počítač", _IS_COMPUTER, "bool"),
             "online": ("Online", "d.online", "bool"),
@@ -496,7 +505,10 @@ def agent_summary(conn):
         "COALESCE(SUM(%s = 'nikdy'), 0) AS never "
         "FROM devices d" % (comp, state, state, state)).fetchone()
     out = {k: int(row[k]) for k in ("total", "computers", "ok", "stale", "never")}
-    out["network"] = out["total"] - out["computers"]
+    sec = ent["columns"]["section"][1]
+    counts = {r["s"]: r["n"] for r in conn.execute("SELECT %s AS s, COUNT(*) AS n FROM devices d GROUP BY 1" % sec)}
+    out["sections"] = {name: int(counts.get(name, 0)) for name in SECTIONS}
+    out["no_section"] = int(counts.get("", 0))
     out["stale_hours"] = stale_hours(conn)
     return out
 
