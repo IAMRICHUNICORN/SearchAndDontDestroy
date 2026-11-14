@@ -833,6 +833,8 @@ PAGES.agent = async (main) => {
       el('p', null, 'Spusťte na počítači v příkazovém řádku jako správce. Agent se uloží do C:\\ProgramData\\HWSW-Agent a poběží jako naplánovaná úloha pod účtem SYSTEM – i bez přihlášeného uživatele. Hromadně ho nasadíte přes GPO jako spouštěcí skript počítače se stejným příkazem.'),
       cmd(a.install),
       el('p', { class: 'muted' }, 'Agentů aktuálně hlásí: ', el('strong', null, a.agents), '. USB události chodí jen z počítačů s trvale nainstalovaným agentem.')),
+    el('div', { class: 'card' }, el('h2', null, 'Test – co jde na počítači zjistit'),
+      el('p', null, 'Nic neodesílá ani neinstaluje. Jen na obrazovku vypíše, které údaje se podařilo zjistit.'), cmd(a.test)),
     el('div', { class: 'card' }, el('h2', null, 'Jednorázová inventura'),
       el('p', null, 'Nic neinstaluje, jen jednou odešle inventuru. Stejný příkaz používá inventura přes WinRM.'), cmd(a.once)),
     el('div', { class: 'card' }, el('h2', null, 'Odinstalace'), cmd(a.uninstall)),

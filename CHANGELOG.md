@@ -2,6 +2,9 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.2.2
+- Rezim agenta "test": nic neodesila, jen vypise, ktere udaje se na pocitaci podarilo zjistit (stranka Agent pro Windows).
+
 ## 1.2.1
 - Oprava monitoru: kdyz WMI monitory nevrati (napr. Alienware Aurora R13), cte se EDID z registru podle prave pritomnych zarizeni Windows.
 

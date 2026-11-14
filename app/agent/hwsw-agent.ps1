@@ -4,6 +4,7 @@
 #         watch     = trvaly beh: inventura, heartbeat, USB v realnem case
 #         install   = ulozi agenta do ProgramData a zaregistruje naplanovanou ulohu (SYSTEM)
 #         uninstall = odstrani ulohu i soubory
+#         test      = jen vypise, co se na pocitaci podarilo zjistit (nic neodesila)
 # Soubor je generovan serverem; adresa serveru a token jsou vlozeny pri stazeni.
 
 $ServerUrl = '__SERVER_URL__'
@@ -775,10 +776,89 @@ function Watch-Loop {
     }
 }
 
+function Test-Agent {
+    # Rezim "test": nic se neodesila ani neinstaluje. Vypise, co se na tomto pocitaci podarilo zjistit.
+    Write-Host ''
+    Write-Host ('HWSW agent {0} - TEST (nic se neodesila)' -f $AgentVersion)
+    Write-Host ('PowerShell {0}, uzivatel {1}' -f $PSVersionTable.PSVersion, [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+    Write-Host ''
+    $script:okCount = 0; $script:badCount = 0
+    $report = {
+        param([string]$Name, [scriptblock]$Block)
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $res = & $Block
+            $sw.Stop()
+            if ($res) { $script:okCount++; $tag = 'OK     ' } else { $script:badCount++; $tag = 'PRAZDNE' }
+            Write-Host ('[{0}] {1,-30} {2}  ({3} ms)' -f $tag, $Name, $res, $sw.ElapsedMilliseconds)
+        } catch {
+            $script:badCount++
+            Write-Host ('[CHYBA  ] {0,-30} {1}' -f $Name, $_.Exception.Message)
+        }
+    }
+    & $report 'Pocitac (vyrobce, model)' { $cs = Wmi 'Win32_ComputerSystem' | Select-Object -First 1; ((Text $cs.Manufacturer) + ' ' + (Text $cs.Model)).Trim() }
+    & $report 'BIOS (verze, serial)' { $b = Wmi 'Win32_BIOS' | Select-Object -First 1; if ($b) { (Text $b.SMBIOSBIOSVersion) + ' / ' + (Text $b.SerialNumber) } }
+    & $report 'Zakladni deska' { $b = Wmi 'Win32_BaseBoard' | Select-Object -First 1; if ($b) { (Text $b.Manufacturer) + ' ' + (Text $b.Product) } }
+    & $report 'Operacni system' { $o = Wmi 'Win32_OperatingSystem' | Select-Object -First 1; Text $o.Caption }
+    & $report 'Prihlaseny uzivatel' { Get-LoggedUser }
+    & $report 'Procesor' { $c = @(Wmi 'Win32_Processor'); if ($c.Count) { Text $c[0].Name } }
+    & $report 'Pametove moduly' { $m = @(Wmi 'Win32_PhysicalMemory'); if ($m.Count) { '{0} ks' -f $m.Count } }
+    & $report 'Disky' { $d = @(Get-Disks); if ($d.Count) { ($d | ForEach-Object { '{0} ({1})' -f $_.model, $_.health }) -join '; ' } }
+    & $report '  disk: opotrebeni / teplota' { $d = @(Get-Disks) | Where-Object { $null -ne $_.wear_pct -or $null -ne $_.temp_c } | Select-Object -First 1; if ($d) { 'opotrebeni {0} %, teplota {1} C' -f $d.wear_pct, $d.temp_c } }
+    & $report 'Svazky' { $v = @(Wmi 'Win32_LogicalDisk' 'DriveType=3'); if ($v.Count) { '{0} ks' -f $v.Count } }
+    & $report 'Grafika' { $g = @(Wmi 'Win32_VideoController'); if ($g.Count) { Text $g[0].Name } }
+    & $report 'Sitove adaptery' { $n = @(Wmi 'Win32_NetworkAdapterConfiguration' 'IPEnabled=True'); if ($n.Count) { '{0} ks' -f $n.Count } }
+    & $report 'Tiskarny' { $p = @(Wmi 'Win32_Printer'); if ($p.Count) { '{0} ks' -f $p.Count } }
+    & $report 'Monitory (WMI)' { $m = @(Wmi 'WmiMonitorID' '' 'root\wmi'); if ($m.Count) { '{0} ks' -f $m.Count } }
+    & $report 'Monitory (registr/EDID)' { $m = @(Get-MonitorsFromRegistry); if ($m.Count) { ($m | ForEach-Object { '{0} {1} {2}"' -f $_.manufacturer, $_.model, $_.size_inch }) -join '; ' } }
+    & $report 'Monitory (vysledek agenta)' { $m = @(Get-Monitors); if ($m.Count) { '{0} ks' -f $m.Count } }
+    & $report 'Software' { $s = @(Get-Software); if ($s.Count) { '{0} polozek' -f $s.Count } }
+    & $report 'USB zarizeni' { $u = @(Get-UsbList); '{0} ks' -f $u.Count }
+    $sec = $null
+    & $report 'Zabezpeceni (celkem)' { $script:sec = Get-Security; if ($script:sec) { 'zjisteno' } }
+    if ($script:sec) {
+        $s = $script:sec
+        & $report '  BitLocker (systemovy disk)' { $s.bitlocker_os }
+        & $report '  Antivirus' { $s.antivirus_text }
+        & $report '  Firewall' { $s.firewall_text }
+        & $report '  Secure Boot / rezim' { $s.secure_boot_text + ' / ' + $s.boot_mode }
+        & $report '  TPM' { $s.tpm_text }
+        & $report '  Posledni aktualizace' { $s.last_hotfix }
+        & $report '  Zdravi disku (S.M.A.R.T.)' { if ($s.disk_failure_predicted) { 'hrozi selhani' } else { 'bez varovani' } }
+    }
+    $lic = $null
+    & $report 'Licence (celkem)' { $script:lic = Get-Licenses; if ($script:lic) { 'zjisteno' } }
+    if ($script:lic) {
+        $l = $script:lic
+        & $report '  Klic z BIOSu' { if ($l.oem_key) { 'nalezen (' + $l.oem_key.Length + ' znaku)' } }
+        & $report '  Aktivace Windows' { $l.windows_text }
+        & $report '  Produkty (Windows, Office)' { if (@($l.products).Count) { '{0} ks' -f @($l.products).Count } }
+    }
+    $acc = $null
+    & $report 'Ucty (celkem)' { $script:acc = Get-Accounts; if ($script:acc) { 'zjisteno' } }
+    if ($script:acc) {
+        $a = $script:acc
+        & $report '  Mistni administratori' { if (@($a.admins).Count) { @($a.admins) -join '; ' } }
+        & $report '  Mistni ucty' { if (@($a.local).Count) { '{0} ks' -f @($a.local).Count } }
+        & $report '  Profily uzivatelu' { if (@($a.profiles).Count) { '{0} ks' -f @($a.profiles).Count } }
+    }
+    $net = $null
+    & $report 'Sit - dalsi (celkem)' { $script:net = Get-NetworkExtra; if ($script:net) { 'zjisteno' } }
+    if ($script:net) {
+        $n = $script:net
+        & $report '  Naslouchajici porty' { if (@($n.listening).Count) { '{0} portu' -f @($n.listening).Count } }
+        & $report '  Sdilene slozky' { if (@($n.shares).Count) { '{0} ks' -f @($n.shares).Count } }
+    }
+    & $report 'Cela inventura (velikost)' { $j = Get-Inventory | ConvertTo-Json -Depth 8 -Compress; '{0} KB' -f [math]::Round($j.Length / 1024) }
+    Write-Host ''
+    Write-Host ('Hotovo: {0} v poradku, {1} prazdnych nebo s chybou. PRAZDNE neni vzdy chyba (napr. stroj bez Wi-Fi nema SSID).' -f $script:okCount, $script:badCount)
+}
+
 switch ($Mode) {
     'install' { Install-Agent }
     'uninstall' { Uninstall-Agent }
     'watch' { Watch-Loop }
+    'test' { Test-Agent }
     default {
         $null = Send-Inventory
         Write-Output 'HWSW inventura odeslana.'

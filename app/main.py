@@ -787,7 +787,7 @@ def agent_script(request: Request, token: str = "", mode: str = "once"):
     real = _agent_token()
     if not real or not hmac.compare_digest(token.encode(), real.encode()):
         raise HTTPException(401, "Neplatný token agenta")
-    if mode not in ("once", "watch", "install", "uninstall"):
+    if mode not in ("once", "watch", "install", "uninstall", "test"):
         mode = "once"
     with db.db() as conn:
         cfg = db.get_settings(conn, decrypt=False)
@@ -815,7 +815,7 @@ def agent_info(request: Request, user=Depends(admin_user)):
         return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"' % tls.bootstrap_ps(url + mode, pin)
 
     return {"server_url": base, "server_url_set": bool(cfg.get("server_url")), "token": token, "agents": agents,
-            "install": one("install"), "once": one("once"), "uninstall": one("uninstall"),
+            "install": one("install"), "once": one("once"), "test": one("test"), "uninstall": one("uninstall"),
             "download": url + "watch", "tls": tls.enabled(), "cert_thumbprint": pin}
 
 
