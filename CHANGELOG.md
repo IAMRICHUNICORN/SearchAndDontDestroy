@@ -2,6 +2,22 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.6.0
+- USB: evidují se jen zařízení pro ukládání dat (disky, flash). Agent ostatní (klávesnice, myši, čtečky...) nehlásí
+  a server je při příjmu zahazuje i od starších agentů. Při aktualizaci se z databáze jednorázově smažou dosavadní
+  záznamy ostatních USB tříd (aktuální i historie).
+- Hromadné mazání: tlačítko Smazat na liště po označení řádků (Zařízení, Monitory, Licence, USB události, Změny SW),
+  i "všechna odpovídající filtru". Před smazáním se vytvoří záloha databáze (posledních 10 se ponechává).
+- Evidence jako Zařízení: Software, Monitory, USB a Licence mají záložky s počty, rychlé filtry, filtr podle všech
+  parametrů, přetahování sloupců a výběr řádků. Jako sloupce a filtry je dostupná i MAC, výrobce, model, OS, sekce,
+  skupiny, inventární číslo, přidělený uživatel a poznámka zařízení.
+- Čistý sken (Skenování): uloží snímek stavu a zálohu DB, smaže údaje nalezené jen skenem (zařízení bez agenta, ručních
+  údajů, skupiny a SW), vynuluje online stav a porty ostatních a prohledá rozsah znovu.
+- Snímky stavu a porovnání: ruční snímek i snímek před čistým skenem; porovnání se současností ukáže nová, zmizelá
+  a změněná zařízení (název, IP, MAC, typ, OS, sekce, online; změny SW, USB úložišť a monitorů).
+- Databáze: schéma verze 5 (tabulky snímků); před migrací vznikne ověřená záloha.
+- Agent: hlásí jen USB úložiště (nový agent se na počítače dostane přes GPO / samoaktualizaci).
+
 ## 1.5.1
 - Razeni podle IP adresy je ciselne (.2, .11, .12, .100), ne textove.
 - Konflikt IP: kdyz ma stejnou IP vice zarizeni, ktera se obe nedavno ozvala (v rozmezi prahu z Nastaveni, vychozi 72 h),

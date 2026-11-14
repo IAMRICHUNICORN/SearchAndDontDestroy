@@ -144,6 +144,8 @@ function Get-UsbList {
         elseif ($pnpClass -and $classes.ContainsKey($pnpClass)) { $class = $classes[$pnpClass] }
         elseif ($pnpClass) { $class = $pnpClass }
         else { $class = 'USB zarizeni' }
+        # evidujeme jen USB zarizeni pro ukladani dat (disky, flash); klavesnice, mysi apod. ne
+        if ($class -ne 'uloziste') { continue }
         $list += @{
             pnp_id = $id.ToUpper(); name = $name; manufacturer = (Text $d.Manufacturer)
             vid = $usbVid.ToUpper(); pid = $usbPid.ToUpper(); serial = $serial; class = $class

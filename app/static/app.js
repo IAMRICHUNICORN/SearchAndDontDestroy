@@ -367,7 +367,7 @@ function dataTable(opts) {
 
   const selBar = el('div', { class: 'selbar' });
   selBar.style.display = 'none';
-  const selBody = () => (st.all ? { select_all: { filters: st.filters, search: st.search } } : { device_ids: [...st.sel] });
+  const selBody = () => (st.all ? { select_all: { filters: st.filters, search: st.search } } : { device_ids: [...st.sel], ids: [...st.sel] });
   const afterBulk = () => { st.sel.clear(); st.all = false; st.groups = null; load(); if (opts.onChanged) opts.onChanged(); };
   async function ensureGroups() {
     if (!st.groups) { try { st.groups = (await api('GET', '/api/groups')).groups; } catch (e) { st.groups = []; } }
@@ -405,13 +405,13 @@ function dataTable(opts) {
     if (!count) { selBar.style.display = 'none'; selBar.replaceChildren(); return; }
     selBar.style.display = '';
     const current = opts.currentSection ? opts.currentSection() : null;
-    const sectionMenu = popMenu('Přesunout do sekce', (close) => [
+    const sectionMenu = !opts.sections ? null : popMenu('Přesunout do sekce', (close) => [
       ...(opts.sections || []).map((n) => el('button', { class: 'pop-item', onclick: run(() => moveSection(n, 'Přesunuto do sekce ' + n), close) },
         n, current === n ? el('span', { class: 'muted small' }, ' (současná)') : null)),
       el('div', { class: 'pop-sep' }),
       el('button', { class: 'pop-item', onclick: run(() => moveSection('', 'Odebráno ze sekce'), close) }, 'Bez sekce (jen ve Vše)'),
       el('button', { class: 'pop-item', onclick: run(() => moveSection(null, 'Zařazeno automaticky'), close) }, 'Automaticky podle typu')]);
-    const groupMenu = popMenu('Skupiny', async (close) => {
+    const groupMenu = !opts.sections ? null : popMenu('Skupiny', async (close) => {
       const groups = await ensureGroups();
       return [
         ...(groups.length ? groups.map((g) => el('div', { class: 'pop-row' }, groupTag(g.name, g.color),
@@ -432,7 +432,9 @@ function dataTable(opts) {
       el('span', { class: 'sel-count' }, '✓ ' + (st.all ? 'všech ' + st.total : count) + ' vybráno'),
       !st.all && st.total > count ? el('button', { class: 'link', onclick: () => { st.all = true; syncSel(); } }, 'Vybrat všech ' + st.total + ' odpovídajících filtru') : null,
       el('span', { class: 'sel-actions' }, sectionMenu, groupMenu,
-        current ? el('button', { class: 'menu-btn', title: 'Zařízení zůstanou jen ve Vše', onclick: run(() => moveSection('', 'Odebráno ze sekce ' + current), () => {}) }, 'Odebrat ze sekce ' + current) : null),
+        current ? el('button', { class: 'menu-btn', title: 'Zařízení zůstanou jen ve Vše', onclick: run(() => moveSection('', 'Odebráno ze sekce ' + current), () => {}) }, 'Odebrat ze sekce ' + current) : null,
+        ...(opts.bulk || []).map((b) => el('button', { class: 'menu-btn' + (b.danger ? ' danger' : ''), title: b.title || '',
+          onclick: run(async () => { if (await b.run(selBody(), count)) afterBulk(); }, () => {}) }, b.label))),
       el('button', { class: 'clear', title: 'Zrušit výběr (Esc)', 'aria-label': 'Zrušit výběr', onclick: () => { st.sel.clear(); st.all = false; syncSel(); } }, '✕'));
   }
   // sladi zaskrtavatka, podbarveni radku a listu s aktualnim vyberem (bez nacitani dat)
@@ -752,7 +754,7 @@ PAGES.zarizeni = async (main, parts, params) => {
     filters: curTab[1].concat(FLAGS.filter((f) => flags.has(f[0])).map((f) => f[3]),
       curGroup ? [{ col: 'groups', op: 'eq', value: curGroup, tab: true }] : []),
     columns: curTab[2], sort: curTab[3], sortDir: 'asc' });
-  const t = dataTable({ entity: 'devices', adhoc: true, selectable: true, sections: SECTIONS,
+  const t = dataTable({ entity: 'devices', adhoc: true, selectable: true, sections: SECTIONS, bulk: [bulkDelete('devices', 'zařízení')],
     currentSection: () => (SECTIONS.includes(curTab[0]) ? curTab[0] : null),
     onChanged: () => { summary(); loadGroupSel(); },
     onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
@@ -825,32 +827,107 @@ function tabbed(main, tabs, initial) {
   return show;
 }
 
+// hromadne mazani oznacenych radku (potvrzeni + zaloha na serveru)
+function bulkDelete(entity, noun) {
+  return { label: 'Smazat', danger: true, title: 'Trvale smaže označené ' + noun,
+    run: async (body, count) => {
+      const text = 'Smazat ' + count + ' ' + noun + '? Smazání nelze vrátit zpět (před smazáním se vytvoří záloha databáze).' +
+        (entity === 'devices' ? ' Zařízení, která jsou stále v síti, se při dalším skenu objeví znovu.' : '');
+      if (!(await confirmBox(text, 'Smazat'))) return false;
+      const r = await api('POST', '/api/bulk-delete', Object.assign({ entity }, body));
+      toast('Smazáno: ' + r.deleted, 'ok');
+      return true;
+    } };
+}
+
+async function countRows(entity, filters) {
+  try { return (await api('POST', '/api/query', { entity, filters, page_size: 10, page: 1 })).total; } catch (e) { return ''; }
+}
+
+// stranka evidence ve stylu Zarizeni: zalozky s pocty, rychle filtry, filtr podle vsech parametru, sloupce, vyber radku
+function evidencePage(box, cfg) {
+  const mark = (arr) => (arr || []).map((f) => Object.assign({ tab: true }, f));
+  let curTab = cfg.tabs[0];
+  const flags = new Set();
+  const flagList = cfg.flags || [];
+  const viewOf = () => ({ filters: (cfg.base || []).concat(mark(curTab.filters), ...flagList.filter((f) => flags.has(f.key)).map((f) => mark([f.filter]))),
+    columns: curTab.columns || [], sort: curTab.sort || cfg.sort || '', sortDir: curTab.sortDir || cfg.sortDir || '' });
+  const v0 = viewOf();
+  const t = dataTable(Object.assign({ entity: cfg.entity, adhoc: true, filters: v0.filters, columns: v0.columns, sort: v0.sort, sortDir: v0.sortDir,
+    selectable: !!(cfg.table && cfg.table.bulk), onChanged: () => counts() }, cfg.table || {}));
+  const tabCount = {}; const flagCount = {};
+  const tabButtons = cfg.tabs.map((tab) => {
+    const n = el('span', { class: 'count' }); tabCount[tab.label] = n;
+    const b = el('button', { role: 'tab', class: tab === curTab ? 'active' : '', onclick: () => {
+      tabButtons.forEach((x) => x.classList.toggle('active', x === b));
+      curTab = tab; t.setView(viewOf()); counts();
+    } }, tab.label, ' ', n);
+    return b;
+  });
+  const flagButtons = flagList.map((f) => {
+    const n = el('span', { class: 'count' }); flagCount[f.key] = n;
+    const b = el('button', { class: 'flag', 'aria-pressed': 'false', onclick: () => {
+      if (flags.has(f.key)) flags.delete(f.key); else flags.add(f.key);
+      b.classList.toggle('on', flags.has(f.key)); b.setAttribute('aria-pressed', flags.has(f.key) ? 'true' : 'false');
+      t.setView(viewOf());
+    } }, f.label, ' ', n);
+    return b;
+  });
+  async function counts() {
+    for (const tab of cfg.tabs) tabCount[tab.label].textContent = await countRows(cfg.entity, mark(tab.filters));
+    for (const f of flagList) flagCount[f.key].textContent = await countRows(cfg.entity, mark(curTab.filters).concat(mark([f.filter])));
+  }
+  if (cfg.tabs.length > 1) box.append(el('div', { class: 'tabs', role: 'tablist' }, ...tabButtons));
+  if (flagList.length) box.append(el('div', { class: 'quick' }, el('span', { class: 'muted small' }, 'Rychlé filtry:'), ...flagButtons));
+  box.append(t.node);
+  counts();
+  return t;
+}
+
 PAGES.software = async (main) => {
   pageHead(main, 'Software', 'Nainstalovaný software podle hlášení agentů');
   const openDevice = (r) => { if (r._device_id) location.hash = '#/zarizeni/' + r._device_id; };
   const show = tabbed(main, [
-    ['souhrn', 'Souhrn', (box) => box.append(dataTable({ entity: 'software_summary', adhoc: true,
-      onRow: (r) => show('instalace', r.name) }).node)],
-    ['instalace', 'Instalace na počítačích', (box, name) => box.append(dataTable({ entity: 'software', adhoc: true,
-      filters: name ? [{ col: 'name', op: 'eq', value: name }] : [], onRow: openDevice }).node)],
-    ['zmeny', 'Změny', (box) => box.append(dataTable({ entity: 'sw_changes', adhoc: true, onRow: openDevice,
-      emptyText: 'Změny se zaznamenávají od druhé inventury každého počítače' }).node)],
+    ['souhrn', 'Souhrn', (box) => evidencePage(box, { entity: 'software_summary', tabs: [{ label: 'Vše', filters: [] }],
+      flags: [{ key: 'one', label: 'Jen 1 instalace', filter: { col: 'installs', op: 'eq', value: '1' } },
+        { key: 'multi', label: 'Více verzí', filter: { col: 'versions', op: 'gt', value: '1' } }],
+      sort: 'installs', sortDir: 'desc', table: { onRow: (r) => show('instalace', r.name) } })],
+    ['instalace', 'Instalace na počítačích', (box, name) => evidencePage(box, { entity: 'software', tabs: [{ label: 'Vše', filters: [] }],
+      base: name ? [{ col: 'name', op: 'eq', value: name }] : [], sort: 'name', table: { onRow: openDevice } })],
+    ['zmeny', 'Změny', (box) => evidencePage(box, { entity: 'sw_changes', tabs: [{ label: 'Vše', filters: [] }],
+      flags: [{ key: 'd1', label: 'Posledních 24 h', filter: { col: 'ts', op: 'newer_h', value: '24' } },
+        { key: 'd7', label: 'Posledních 7 dní', filter: { col: 'ts', op: 'newer_h', value: '168' } }],
+      sort: 'ts', sortDir: 'desc', table: { onRow: openDevice, bulk: [bulkDelete('sw_changes', 'záznamů změn')],
+        emptyText: 'Změny se zaznamenávají od druhé inventury každého počítače' } })],
   ]);
 };
 
 PAGES.monitory = async (main) => {
   pageHead(main, 'Monitory', 'Výrobce, model, sériové číslo a úhlopříčka z EDID monitoru');
-  main.append(dataTable({ entity: 'monitors', adhoc: true,
-    onRow: (r) => { if (r._device_id) location.hash = '#/zarizeni/' + r._device_id; } }).node);
+  evidencePage(main, { entity: 'monitors', sort: 'manufacturer',
+    tabs: [{ label: 'Připojené', filters: [{ col: 'connected', op: 'eq', value: 'ano' }] },
+      { label: 'Odpojené', filters: [{ col: 'connected', op: 'eq', value: 'ne' }] },
+      { label: 'Vše', filters: [] }],
+    flags: [{ key: 'old', label: 'Bez roku výroby', filter: { col: 'year', op: 'empty', value: '' } },
+      { key: 'noted', label: 'S poznámkou', filter: { col: 'note', op: 'not_empty', value: '' } }],
+    table: { onRow: (r) => { if (r._device_id) location.hash = '#/zarizeni/' + r._device_id; }, bulk: [bulkDelete('monitors', 'monitorů')] } });
 };
 
 PAGES.usb = async (main) => {
-  pageHead(main, 'USB zařízení', 'Události přicházejí z agentů během několika sekund po připojení nebo odpojení');
+  pageHead(main, 'USB zařízení', 'Evidují se jen úložná zařízení (disky, flash). Události přicházejí z agentů během několika sekund po připojení nebo odpojení');
   let current = null;
   const openDevice = (r) => { if (r._device_id) location.hash = '#/zarizeni/' + r._device_id; };
   tabbed(main, [
-    ['udalosti', 'Události', (box) => { current = dataTable({ entity: 'usb_events', adhoc: true, onRow: openDevice }); box.append(current.node); }],
-    ['pripojena', 'Právě připojená', (box) => { current = dataTable({ entity: 'usb_current', adhoc: true, onRow: openDevice }); box.append(current.node); }],
+    ['udalosti', 'Události', (box) => { current = evidencePage(box, { entity: 'usb_events', sort: 'ts', sortDir: 'desc',
+      tabs: [{ label: 'Vše', filters: [] }, { label: 'Připojeno', filters: [{ col: 'action', op: 'eq', value: 'připojeno' }] },
+        { label: 'Odpojeno', filters: [{ col: 'action', op: 'eq', value: 'odpojeno' }] }],
+      flags: [{ key: 'd1', label: 'Posledních 24 h', filter: { col: 'ts', op: 'newer_h', value: '24' } },
+        { key: 'd7', label: 'Posledních 7 dní', filter: { col: 'ts', op: 'newer_h', value: '168' } }],
+      table: { onRow: openDevice, bulk: [bulkDelete('usb_events', 'událostí')] } }); }],
+    ['pripojena', 'Právě připojená', (box) => { current = evidencePage(box, { entity: 'usb_current', sort: 'connected_at', sortDir: 'desc',
+      tabs: [{ label: 'Vše', filters: [] }],
+      flags: [{ key: 'd1', label: 'Připojeno do 24 h', filter: { col: 'connected_at', op: 'newer_h', value: '24' } }],
+      table: { onRow: openDevice } }); }],
   ]);
   S.live = (ev) => { if (ev.type === 'usb' && current) current.reload(); };
 };
@@ -1081,11 +1158,14 @@ PAGES.licence = async (main) => {
   pageHead(main, 'Licence', 'Evidence licencí a porovnání se skutečně nainstalovaným softwarem');
   let t = null;
   const reload = () => t.reload();
-  t = dataTable({ entity: 'licenses', adhoc: true, onRow: (r) => licenseDialog(r._id, reload).catch(fail),
-    emptyText: 'Zatím žádné licence – přidejte je ručně nebo importujte z CSV',
-    buttons: [el('button', { onclick: () => licenseImport(reload) }, 'Import CSV'),
-      el('button', { class: 'primary', onclick: () => licenseDialog(null, reload).catch(fail) }, 'Přidat licenci')] });
-  main.append(t.node);
+  t = evidencePage(main, { entity: 'licenses', sort: 'product',
+    tabs: [{ label: 'Vše', filters: [] }, { label: 'Překročené', filters: [{ col: 'free', op: 'lt', value: '0' }] }],
+    flags: [{ key: 'nopat', label: 'Bez vzoru názvu SW', filter: { col: 'match_pattern', op: 'empty', value: '' } },
+      { key: 'unassigned', label: 'Nepřiděleno', filter: { col: 'assigned_to', op: 'empty', value: '' } }],
+    table: { onRow: (r) => licenseDialog(r._id, reload).catch(fail), bulk: [bulkDelete('licenses', 'licencí')],
+      emptyText: 'Zatím žádné licence – přidejte je ručně nebo importujte z CSV',
+      buttons: [el('button', { onclick: () => licenseImport(reload) }, 'Import CSV'),
+        el('button', { class: 'primary', onclick: () => licenseDialog(null, reload).catch(fail) }, 'Přidat licenci')] } });
 };
 
 // --------------------------------------------------------------- pohledy
@@ -1170,10 +1250,30 @@ PAGES.pohled = async (main, parts) => {
 
 // ---------------------------------------------------------------- sprava
 
+async function compareDialog(sn) {
+  const r = await api('GET', '/api/snapshots/' + sn.id + '/compare');
+  const dev = (d) => [d.name, d.ip, d.mac, d.device_type];
+  const diffText = (d) => (d.added_n != null
+    ? d.field + ': ' + (d.added_n ? '+' + d.added_n + ' (' + d.added.slice(0, 5).join(', ') + (d.added_n > 5 ? ', …' : '') + ') ' : '') +
+      (d.removed_n ? '−' + d.removed_n + ' (' + d.removed.slice(0, 5).join(', ') + (d.removed_n > 5 ? ', …' : '') + ')' : '')
+    : d.field + ': ' + (d.old || '–') + ' → ' + (d.new || '–'));
+  const body = el('div', null,
+    el('p', { class: 'muted' }, 'Snímek z ' + fmtDate(r.snapshot.taken_at) + ' (' + r.snapshot.device_count + ' zařízení) × současný stav (' + r.now_count + ' zařízení)'),
+    el('h3', null, 'Nová zařízení (' + r.added.length + ')'),
+    simpleTable(['Název', 'IP', 'MAC', 'Typ'], r.added.map(dev), 'Žádná nová zařízení'),
+    el('h3', { style: 'margin-top:14px' }, 'Zmizelá zařízení (' + r.removed.length + ')'),
+    simpleTable(['Název', 'IP', 'MAC', 'Typ'], r.removed.map(dev), 'Nic nezmizelo'),
+    el('h3', { style: 'margin-top:14px' }, 'Změněná zařízení (' + r.changed.length + ')'),
+    simpleTable(['Zařízení', 'Změny'], r.changed.map((c) => [el('a', { href: '#/zarizeni/' + c.device_id, onclick: () => document.querySelector('.overlay') && document.querySelector('.overlay').remove() }, c.name),
+      el('div', null, c.diffs.map((d) => el('div', { class: 'small' }, diffText(d))))]), 'Beze změn'));
+  modal('Porovnání se snímkem', body, [{ label: 'Zavřít', primary: true }], true);
+}
+
 PAGES.skenovani = async (main) => {
   const [cfg, jobs] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/jobs')]);
   pageHead(main, 'Skenování', 'Zjišťování zařízení v doméně a v síti');
   const running = new Set(jobs.filter((j) => j.status === 'running').map((j) => j.kind));
+  const snaps = (await api('GET', '/api/snapshots')).snapshots;
   const card = (kind, title, text, enabled, interval) => el('div', { class: 'card' }, el('h2', null, title), el('p', { class: 'muted' }, text),
     el('div', { class: 'row' },
       el('span', { class: 'badge ' + (enabled ? 'ok' : '') }, enabled ? 'automaticky každých ' + interval + ' min' : 'automatika vypnuta'),
@@ -1184,7 +1284,25 @@ PAGES.skenovani = async (main) => {
   main.append(el('div', { class: 'grid two' },
     card('ad_sync', 'Active Directory', 'Načte počítače a uživatele z domény (název, OS, organizační jednotka, poslední přihlášení).', cfg.ad_enabled === '1', cfg.ad_interval_min),
     card('ip_scan', 'Sken IP rozsahu', 'Najde vše, co v síti odpovídá: tiskárny, switche, NAS, kamery i počítače mimo doménu. Rozsah: ' + (cfg.scan_ranges || 'není zadán'), cfg.scan_enabled === '1', cfg.scan_interval_min),
+    el('div', { class: 'card' }, el('h2', null, 'Čistý sken'),
+      el('p', { class: 'muted' }, 'Uloží snímek současného stavu a zálohu databáze, smaže údaje nalezené jen skenem a prohledá rozsah znovu. Data z agentů, ruční údaje, skupiny a sekce zůstanou. Výsledek pak porovnáte se snímkem níže.'),
+      el('div', { class: 'row' }, el('button', { class: 'primary right', disabled: running.has('clean_scan'), onclick: async (e) => {
+        if (!(await confirmBox('Spustit čistý sken? Nejdřív se uloží snímek a záloha databáze. Poté se smažou zařízení nalezená jen skenem (bez agenta, ručních údajů, skupiny a SW) a rozsah ' + (cfg.scan_ranges || '') + ' se prohledá znovu.', 'Spustit čistý sken'))) return;
+        e.target.disabled = true;
+        try { await api('POST', '/api/jobs/clean_scan/run'); toast('Čistý sken spuštěn', 'ok'); setTimeout(route, 600); } catch (ex) { fail(ex); e.target.disabled = false; }
+      } }, running.has('clean_scan') ? 'Běží…' : 'Spustit čistý sken'))),
     card('winrm', 'Inventura přes WinRM', 'Bez předchozí instalace spustí inventuru (nebo instalaci agenta) na počítačích s Windows, které ji dlouho neposlaly.', cfg.winrm_enabled === '1', cfg.winrm_interval_min)));
+  main.append(el('h2', null, 'Snímky stavu a porovnání'),
+    el('p', { class: 'muted' }, 'Snímek uchová zařízení, jejich IP, MAC, typ, software, USB a monitory. Porovnání ukáže nová, zmizelá a změněná zařízení oproti současnému stavu.'),
+    el('div', { class: 'row', style: 'margin-bottom:10px' }, el('button', { onclick: async () => {
+      await api('POST', '/api/snapshots', { label: 'Ruční snímek' }); toast('Snímek uložen', 'ok'); route();
+    } }, 'Vytvořit snímek teď')),
+    simpleTable(['Pořízen', 'Popis', 'Zařízení', ''], snaps.map((sn) => [fmtDate(sn.taken_at), sn.label || sn.kind, String(sn.device_count),
+      el('div', { class: 'row' }, el('button', { class: 'mini', onclick: () => compareDialog(sn).catch(fail) }, 'Porovnat se současností'),
+        el('button', { class: 'mini danger', onclick: async () => {
+          if (!(await confirmBox('Smazat snímek z ' + fmtDate(sn.taken_at) + '?', 'Smazat'))) return;
+          await api('DELETE', '/api/snapshots/' + sn.id); route();
+        } }, 'Smazat'))]), 'Zatím žádný snímek – vznikne při čistém skenu nebo tlačítkem výše'));
   main.append(el('h2', null, 'Historie úloh'), simpleTable(['Spuštěno', 'Úloha', 'Stav', 'Výsledek', 'Dokončeno'], jobs.map((j) => [
     fmtDate(j.started), j.label, el('span', { class: 'badge ' + (j.status === 'ok' ? 'ok' : (j.status === 'chyba' ? 'bad' : 'warn')) }, j.status === 'running' ? 'běží' : j.status),
     j.summary, fmtDate(j.finished)]), 'Zatím neproběhla žádná úloha'));

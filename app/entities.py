@@ -69,6 +69,19 @@ _GROUPS_JSON = ("(SELECT json_group_array(json_object('n', n, 'c', c)) FROM (SEL
                 "FROM device_group_members m JOIN device_groups g ON g.id = m.group_id WHERE m.device_id = d.id "
                 "ORDER BY g.name COLLATE NOCASE))")
 
+# dalsi udaje o zarizeni (vcetne ruchne zadanych) pouzitelne jako sloupce i filtry v ostatnich evidencich
+_DEVICE_REF.update({
+    "device_mac": ("MAC počítače", "d.mac", "text"),
+    "device_manufacturer": ("Výrobce počítače", "d.manufacturer", "text"),
+    "device_model": ("Model počítače", "d.model", "text"),
+    "device_os": ("OS počítače", "d.os_name", "text"),
+    "device_section": ("Sekce", _SECTION, "text"),
+    "device_groups": ("Skupiny", _GROUPS_TEXT, "text"),
+    "asset_tag": ("Inventární číslo", "d.asset_tag", "text"),
+    "assigned_user": ("Přidělen komu", "d.assigned_user", "text"),
+    "device_note": ("Poznámka k zařízení", "d.note", "text"),
+})
+
 ENTITIES = {
     "devices": {
         "label": "Zařízení (HW a síť)",

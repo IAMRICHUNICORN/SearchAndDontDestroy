@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from . import db, discovery, entities, ingest, tls
+from . import db, discovery, entities, ingest, snapshots, tls
 from .bus import bus
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -572,6 +572,71 @@ def device_delete(device_id: int, user=Depends(admin_user)):
     with db.db() as conn:
         conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
     return {"ok": True}
+
+
+BULK_DELETE = {"devices": "devices", "monitors": "monitors", "licenses": "licenses", "usb_events": "usb_events",
+               "sw_changes": "sw_changes"}
+
+
+@app.post("/api/bulk-delete")
+def bulk_delete(body: dict = Body(...), user=Depends(admin_user)):
+    """Hromadne smazani oznacenych radku (ids, nebo select_all = vse podle filtru). Pred smazanim vznikne zaloha."""
+    entity = body.get("entity")
+    if entity not in BULK_DELETE:
+        raise HTTPException(400, "Tato evidence nepodporuje hromadné mazání")
+    table = BULK_DELETE[entity]
+    with db.db() as conn:
+        sel = body.get("select_all")
+        if isinstance(sel, dict):
+            ent = entities.ENTITIES[entity]
+            first = next(iter(ent["columns"]))
+            _m, rows, _t = entities.run_query(conn, entity, [first], sel.get("filters"), sel.get("search"),
+                                              limit=20000)
+            ids = [r["_id"] for r in rows]
+        else:
+            ids = [int(i) for i in (body.get("ids") or []) if str(i).isdigit()][:20000]
+    if not ids:
+        raise HTTPException(400, "Není vybrán žádný záznam")
+    backup = db.backup_db("pre-delete")
+    deleted = 0
+    with db.db() as conn:
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            deleted += conn.execute("DELETE FROM %s WHERE id IN (%s)" % (table, ",".join("?" * len(chunk))),
+                                    chunk).rowcount
+    return {"ok": True, "deleted": deleted, "backup": backup}
+
+
+# ---------------------------------------------------------------- snimky
+
+@app.get("/api/snapshots")
+def snapshots_list(user=Depends(admin_user)):
+    with db.db() as conn:
+        return {"snapshots": snapshots.list_all(conn)}
+
+
+@app.post("/api/snapshots")
+def snapshots_create(body: dict = Body(default={}), user=Depends(admin_user)):
+    with db.db() as conn:
+        snap_id = snapshots.take(conn, str(body.get("label") or "Ruční snímek"), "ruční")
+    return {"ok": True, "id": snap_id}
+
+
+@app.delete("/api/snapshots/{snap_id}")
+def snapshots_delete(snap_id: int, user=Depends(admin_user)):
+    with db.db() as conn:
+        if not snapshots.delete(conn, snap_id):
+            raise HTTPException(404, "Snímek neexistuje")
+    return {"ok": True}
+
+
+@app.get("/api/snapshots/{snap_id}/compare")
+def snapshots_compare(snap_id: int, user=Depends(admin_user)):
+    with db.db() as conn:
+        result = snapshots.compare(conn, snap_id)
+    if result is None:
+        raise HTTPException(404, "Snímek neexistuje")
+    return result
 
 
 @app.put("/api/monitors/{monitor_id}")

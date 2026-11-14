@@ -11,7 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from . import db, ingest, tls
+from . import db, ingest, snapshots, tls
 from .bus import bus
 
 MAX_SCAN_HOSTS = 8192
@@ -265,6 +265,33 @@ def job_ip_scan():
     return "Prohledáno %d adres, nalezeno %d zařízení, z toho %d nových" % (len(ips), len(results), new)
 
 
+def clean_scan_data(conn):
+    """Smaze jen to, co vzniklo samotnym skenem: zarizeni nalezena jen skenem, bez agenta, bez rucnich udaju,
+    bez skupiny a bez SW. U ostatnich zarizeni (mimo agenta) vynuluje online stav a porty. Vraci pocet smazanych."""
+    removed = conn.execute(
+        "DELETE FROM devices WHERE source = 'sken' AND COALESCE(last_inventory, '') = '' "
+        "AND COALESCE(agent_version, '') = '' AND COALESCE(asset_tag, '') = '' AND COALESCE(location, '') = '' "
+        "AND COALESCE(assigned_user, '') = '' AND COALESCE(note, '') = '' AND section_manual IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM device_group_members m WHERE m.device_id = devices.id) "
+        "AND NOT EXISTS (SELECT 1 FROM software s WHERE s.device_id = devices.id)").rowcount
+    conn.execute("UPDATE devices SET online = 0, open_ports = '' WHERE source <> 'agent'")
+    return removed
+
+
+def job_clean_scan():
+    """Cisty sken: snimek stavu + zaloha DB, smazani udaju ze skenu, novy sken IP rozsahu."""
+    with db.db() as conn:
+        cfg = db.get_settings(conn)
+        if not parse_ranges(cfg["scan_ranges"]):
+            return "Není zadán žádný IP rozsah – nic nebylo smazáno"
+        snap_id = snapshots.take(conn, "Před čistým skenem", "před čistým skenem")
+    backup = db.backup_db("pre-clean-scan")
+    with db.db() as conn:
+        removed = clean_scan_data(conn)
+    result = job_ip_scan()
+    return "Snímek č. %d, záloha %s, odstraněno %d záznamů ze skenu. %s" % (snap_id, backup, removed, result)
+
+
 # ------------------------------------------------------- Active Directory
 
 def _first(value):
@@ -431,6 +458,7 @@ def job_winrm():
 JOBS = {
     "ad_sync": ("Synchronizace s Active Directory", job_ad_sync),
     "ip_scan": ("Sken IP rozsahu", job_ip_scan),
+    "clean_scan": ("Čistý sken (se snímkem a zálohou)", job_clean_scan),
     "winrm": ("Inventura přes WinRM", job_winrm),
 }
 _running = set()

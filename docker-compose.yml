@@ -1,7 +1,7 @@
 # HWSW Monitor - nasazeni na QNAP (Container Station) nebo jakykoli Docker.
 services:
   hwsw:
-    image: hwsw-monitor:1.5.1
+    image: hwsw-monitor:1.6.0
     build: .
     container_name: hwsw-monitor
     restart: unless-stopped

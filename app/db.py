@@ -226,6 +226,33 @@ MIGRATIONS = [
         # verze 1.5.0: sekce zarizeni. NULL = automaticky podle typu, '' = rucne bez sekce, jinak rucne zvolena sekce
         "ALTER TABLE devices ADD COLUMN section_manual TEXT",
     ],
+    [
+        # verze 1.6.0: snimky stavu (pro cisty sken a porovnani) + USB jen uloziste (ostatni tridy se smazou)
+        """CREATE TABLE snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            taken_at TEXT NOT NULL DEFAULT (datetime('now')),
+            label TEXT DEFAULT '',
+            kind TEXT DEFAULT 'ruční',
+            device_count INTEGER NOT NULL DEFAULT 0)""",
+        """CREATE TABLE snapshot_devices (
+            snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+            device_id INTEGER,
+            hostname TEXT DEFAULT '',
+            ip TEXT DEFAULT '',
+            mac TEXT DEFAULT '',
+            device_type TEXT DEFAULT '',
+            manufacturer TEXT DEFAULT '',
+            model TEXT DEFAULT '',
+            os_name TEXT DEFAULT '',
+            section TEXT DEFAULT '',
+            online INTEGER NOT NULL DEFAULT 0,
+            software TEXT DEFAULT '[]',
+            usb TEXT DEFAULT '[]',
+            monitors TEXT DEFAULT '[]')""",
+        "CREATE INDEX idx_snapshot_devices_snap ON snapshot_devices(snapshot_id)",
+        "DELETE FROM usb_events WHERE class <> 'úložiště'",
+        "DELETE FROM usb_current WHERE class <> 'úložiště'",
+    ],
 ]
 
 
@@ -339,8 +366,11 @@ def backup_path(name):
 
 def prune_backups(keep_auto):
     """Smaze stare automaticke zalohy. Rucni a pred-aktualizacni se nemazou."""
-    autos = [b for b in list_backups() if b["label"] == "auto"]
-    for b in autos[max(1, int(keep_auto)):]:
+    backups = list_backups()
+    autos = [b for b in backups if b["label"] == "auto"]
+    # zalohy pred hromadnym mazanim: ponechame poslednich 10
+    deletes = [b for b in backups if b["label"] == "pre-delete"]
+    for b in autos[max(1, int(keep_auto)):] + deletes[10:]:
         try:
             os.remove(os.path.join(BACKUP_DIR, b["name"]))
         except OSError:

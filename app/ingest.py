@@ -35,6 +35,9 @@ USB_CLASSES = {
 }
 
 
+USB_STORAGE = "úložiště"   # evidujeme jen USB zarizeni pro ukladani dat
+
+
 def s(value, limit=255):
     """Bezpecny retezec z libovolne hodnoty z JSON."""
     if value is None:
@@ -116,7 +119,8 @@ def sync_usb(conn, device, usb_list, user):
         if not isinstance(u, dict):
             continue
         pnp = s(u.get("pnp_id"), 400).upper()
-        if pnp:
+        cls = USB_CLASSES.get(s(u.get("class"), 80).lower(), s(u.get("class"), 80))
+        if pnp and cls == USB_STORAGE:
             reported[pnp] = u
     current = {r["pnp_id"]: r for r in conn.execute("SELECT * FROM usb_current WHERE device_id = ?", (dev_id,))}
     baseline = bool(device["usb_baseline"])
