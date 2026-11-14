@@ -2,6 +2,13 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.5.1
+- Razeni podle IP adresy je ciselne (.2, .11, .12, .100), ne textove.
+- Konflikt IP: kdyz ma stejnou IP vice zarizeni, ktera se obe nedavno ozvala (v rozmezi prahu z Nastaveni, vychozi 72 h),
+  zobrazi se u adresy znacka "konflikt" s nazvem druheho zarizeni, rychly filtr "Konflikt IP" s poctem, sloupec/filtr
+  "Konflikt IP" a upozorneni na Prehledu. Stejna neprazdna MAC se bere jako duplicita, ne konflikt.
+- Databaze beze zmeny (schema 4).
+
 ## 1.5.0
 - Sekce zarizeni: Pocitace, Servery, IoT, Sit a tiskarny a Vse. Zarizeni se zarazuji automaticky podle typu, ale rucni
   presun ma prednost (sloupec Sekce). "Odebrat ze sekce" nechava zarizeni jen ve Vse; "Automaticky podle typu" vraci puvodni zarazeni.

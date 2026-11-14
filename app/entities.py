@@ -44,6 +44,25 @@ _AGENT_STATE_ORDER = ("CASE WHEN COALESCE(d.last_inventory, '') <> '' THEN "
                       "CASE WHEN d.last_inventory >= datetime('now', '-__STALE__ hours') THEN 2 ELSE 1 END "
                       "WHEN %s = 1 THEN 0 ELSE 3 END" % _IS_COMPUTER)
 
+def _ip_sort(col):
+    """Razeni IPv4 podle cisel (ne podle textu); ostatni hodnoty (prazdne, IPv6) na konec."""
+    parts, rest = [], col
+    for _ in range(4):
+        parts.append("CAST(substr(%s, 1, instr(%s || '.', '.') - 1) AS INTEGER)" % (rest, rest))
+        rest = "substr(%s, instr(%s || '.', '.') + 1)" % (rest, rest)
+    return ("CASE WHEN %s GLOB '[0-9]*.[0-9]*.[0-9]*.[0-9]*' THEN printf('%%03d%%03d%%03d%%03d', %s) "
+            "ELSE 'z' || COALESCE(%s, '') END" % (col, ", ".join(parts), col))
+
+
+# stejna IP na vice zarizenich, ktera se obe nedavno ozvala (__STALE__ hodin); shodna neprazdna MAC = duplicita, ne konflikt
+_IPC_WHERE = ("o.id <> d.id AND d.ip <> '' AND o.ip = d.ip "
+              "AND o.last_seen >= datetime('now', '-__STALE__ hours') "
+              "AND d.last_seen >= datetime('now', '-__STALE__ hours') "
+              "AND (COALESCE(o.mac, '') = '' OR COALESCE(d.mac, '') = '' OR o.mac <> d.mac)")
+_IP_CONFLICT = "CASE WHEN EXISTS (SELECT 1 FROM devices o WHERE %s) THEN 1 ELSE 0 END" % _IPC_WHERE
+_IP_CONFLICT_WITH = ("(SELECT GROUP_CONCAT(COALESCE(NULLIF(o.hostname, ''), o.ip) || CASE WHEN COALESCE(o.mac, '') <> '' "
+                     "THEN ' (' || o.mac || ')' ELSE '' END, ', ') FROM devices o WHERE %s)" % _IPC_WHERE)
+
 _GROUPS_TEXT = ("(SELECT GROUP_CONCAT(n, ', ') FROM (SELECT g.name AS n FROM device_group_members m "
                 "JOIN device_groups g ON g.id = m.group_id WHERE m.device_id = d.id ORDER BY g.name COLLATE NOCASE))")
 _GROUPS_JSON = ("(SELECT json_group_array(json_object('n', n, 'c', c)) FROM (SELECT g.name AS n, g.color AS c "
@@ -64,6 +83,7 @@ ENTITIES = {
             "is_computer": ("Je to počítač", _IS_COMPUTER, "bool"),
             "online": ("Online", "d.online", "bool"),
             "ip": ("IP adresa", "d.ip", "text"),
+            "ip_conflict": ("Konflikt IP", _IP_CONFLICT, "bool"),
             "mac": ("MAC adresa", "d.mac", "text"),
             "manufacturer": ("Výrobce", "d.manufacturer", "text"),
             "model": ("Model", "d.model", "text"),
@@ -121,8 +141,9 @@ ENTITIES = {
         "sort": ("hostname", "asc"),
         # skryte hodnoty radku (pro zobrazeni) a vlastni razeni
         "extra": {"_inv": "d.last_inventory", "_agent": "d.agent_version", "_host": "d.hostname",
-                  "_cur": "d.user_current", "_login": "d.last_login_at", "_groups": _GROUPS_JSON},
-        "sort_expr": {"agent_state": _AGENT_STATE_ORDER},
+                  "_cur": "d.user_current", "_login": "d.last_login_at", "_groups": _GROUPS_JSON,
+                  "_ipc": _IP_CONFLICT_WITH},
+        "sort_expr": {"agent_state": _AGENT_STATE_ORDER, "ip": _ip_sort("d.ip")},
     },
     "software": {
         "label": "Software – instalace",
@@ -314,12 +335,14 @@ def stale_hours(conn):
 
 def _resolve(conn, ent):
     """Dosadi do SQL vyrazu hodnoty z Nastaveni (prah neaktivniho agenta)."""
-    if not any("__STALE__" in v[1] for v in ent["columns"].values()) and not ent.get("sort_expr"):
+    if not any("__STALE__" in v[1] for v in ent["columns"].values()) and not ent.get("sort_expr") \
+            and not any("__STALE__" in v for v in (ent.get("extra") or {}).values()):
         return ent
     hours = str(stale_hours(conn))
     out = dict(ent)
     out["columns"] = {k: (v[0], v[1].replace("__STALE__", hours), v[2]) for k, v in ent["columns"].items()}
     out["sort_expr"] = {k: v.replace("__STALE__", hours) for k, v in (ent.get("sort_expr") or {}).items()}
+    out["extra"] = {k: v.replace("__STALE__", hours) for k, v in (ent.get("extra") or {}).items()}
     # nazvy skupin porovnavame bez ohledu na velikost pismen i s diakritikou (SQLite to u "Ú"/"ú" neumi)
     try:
         out["group_ids"] = {r["name"].casefold(): r["id"] for r in conn.execute("SELECT id, name FROM device_groups")}
@@ -510,7 +533,14 @@ def agent_summary(conn):
     out["sections"] = {name: int(counts.get(name, 0)) for name in SECTIONS}
     out["no_section"] = int(counts.get("", 0))
     out["stale_hours"] = stale_hours(conn)
+    out["ip_conflicts"] = ip_conflict_count(conn)
     return out
+
+
+def ip_conflict_count(conn):
+    """Pocet zarizeni, ktera sdileji IP s jinym (nedavno aktivnim) zarizenim."""
+    ent = _resolve(conn, ENTITIES["devices"])
+    return int(conn.execute("SELECT COALESCE(SUM(%s), 0) FROM devices d" % ent["columns"]["ip_conflict"][1]).fetchone()[0])
 
 
 def distinct_values(conn, entity, col, limit=100):

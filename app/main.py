@@ -215,6 +215,7 @@ def dashboard(user=Depends(active_user)):
             "usb_now": one("SELECT COUNT(*) FROM usb_current"),
             "usb_24h": one("SELECT COUNT(*) FROM usb_events WHERE ts >= datetime('now', '-1 day')"),
             "licenses": one("SELECT COUNT(*) FROM licenses"),
+            "ip_conflicts": entities.ip_conflict_count(conn) if admin else 0,
             "by_type": [dict(r) for r in conn.execute(
                 "SELECT CASE WHEN device_type = '' THEN 'neznámé' ELSE device_type END AS label, COUNT(*) AS n "
                 "FROM devices GROUP BY 1 ORDER BY n DESC LIMIT 12")],

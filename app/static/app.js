@@ -163,6 +163,11 @@ function cell(col, row) {
   if (col.key === 'hostname' && '_host' in row && !row._host && v) {
     return add(el('td', { class: 'nw muted' }), [v]);
   }
+  if (col.key === 'ip' && row._ipc) {
+    const td = el('td', { class: 'nw' });
+    td.title = 'Konflikt IP: stejnou adresu má i ' + row._ipc;
+    return add(td, [v, ' ', el('span', { class: 'badge bad' }, '⚠ konflikt')]);
+  }
   const nw = col.type === 'date' || ['hostname', 'ip', 'device_ip', 'mac', 'serial', 'online'].includes(col.key);
   const td = el('td', { class: col.type === 'num' ? 'num' : (nw ? 'nw' : '') });
   if (col.key === 'online') return add(td, [el('span', { class: 'dot' + (v ? ' on' : '') }), v ? 'online' : 'offline']);
@@ -609,6 +614,11 @@ PAGES.prehled = async (main) => {
     const inner = [el('div', { class: 'n' }, n), el('div', { class: 'l' }, label)];
     return href && isAdmin() ? el('a', { class: 'card stat', href }, inner) : el('div', { class: 'card stat' }, inner);
   };
+  if (d.ip_conflicts) {
+    main.append(el('div', { class: 'note-box' }, el('strong', null, '⚠ Konflikt IP adres: '),
+      d.ip_conflicts + ' zařízení sdílí IP adresu s jiným zařízením. ',
+      el('a', { href: '#/zarizeni' }, 'Otevřít Zařízení'), ' a použít filtr „Konflikt IP“.'));
+  }
   main.append(el('div', { class: 'grid stats' },
     stat(d.devices, 'zařízení celkem', '#/zarizeni'), stat(d.online, 'právě online', '#/zarizeni'),
     stat(d.inventoried, 's úplnou inventurou', '#/zarizeni'), stat(d.monitors, 'monitorů', '#/monitory'),
@@ -732,6 +742,7 @@ PAGES.zarizeni = async (main, parts, params) => {
   const FLAGS = [
     ['never', 'Bez agenta', 'never', { col: 'agent_state', op: 'eq', value: 'nikdy', tab: true }],
     ['stale', 'Neaktivní agent', 'stale', { col: 'agent_state', op: 'eq', value: 'neaktivní', tab: true }],
+    ['ipc', 'Konflikt IP', 'ip_conflicts', { col: 'ip_conflict', op: 'eq', value: 'ano', tab: true }],
     ['nosec', 'Bez sekce', 'no_section', { col: 'section', op: 'eq', value: '', tab: true }],
   ];
   let curTab = TABS[0];
@@ -789,6 +800,7 @@ PAGES.zarizeni = async (main, parts, params) => {
       const c = await api('GET', '/api/devices-summary');
       TABS.forEach((tab) => { counts[tab[0]].textContent = tab[0] === 'Vše' ? c.total : c.sections[tab[0]]; });
       flagCounts.never.textContent = c.never; flagCounts.stale.textContent = c.stale; flagCounts.no_section.textContent = c.no_section;
+      flagCounts.ip_conflicts.textContent = c.ip_conflicts;
       legend.replaceChildren(
         el('span', { class: 'dot on' }), 'odesílá data (do ' + c.stale_hours + ' h)   ',
         el('span', { class: 'dot warn' }), 'agent neposlal data déle než ' + c.stale_hours + ' h   ',
