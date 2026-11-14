@@ -204,6 +204,24 @@ MIGRATIONS = [
                   'hostname', 'asc', 100
            WHERE NOT EXISTS (SELECT 1 FROM views WHERE name = 'Zabezpečení počítačů')""",
     ],
+    [
+        # verze 1.4.0: skupiny zarizeni a posledni prihlaseni
+        """CREATE TABLE device_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            description TEXT DEFAULT '',
+            color TEXT NOT NULL DEFAULT '#3b82a0',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')))""",
+        """CREATE TABLE device_group_members (
+            group_id INTEGER NOT NULL REFERENCES device_groups(id) ON DELETE CASCADE,
+            device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            PRIMARY KEY (group_id, device_id))""",
+        "CREATE INDEX idx_group_members_device ON device_group_members(device_id)",
+        # 1 = uzivatel byl pri poslednim hlaseni agenta prihlasen; last_login_at = kdy byl naposledy videt prihlaseny
+        "ALTER TABLE devices ADD COLUMN user_current INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE devices ADD COLUMN last_login_at TEXT DEFAULT ''",
+        "UPDATE devices SET last_login_at = COALESCE(NULLIF(last_seen, ''), '') WHERE logged_user <> ''",
+    ],
 ]
 
 

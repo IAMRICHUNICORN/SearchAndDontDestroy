@@ -134,6 +134,11 @@ function ago(ts) {
   return 'před ' + Math.round(min / 1440) + ' dny';
 }
 
+function groupTag(name, color) {
+  const c = /^#[0-9a-f]{6}$/i.test(color || '') ? color : '#6b7c85';
+  return el('span', { class: 'gtag', style: 'background:' + c + '2b;border-color:' + c }, name);
+}
+
 const AGENT_DOT = { 'odesílá': 'on', 'neaktivní': 'warn', 'nikdy': 'bad' };
 
 function cell(col, row) {
@@ -144,6 +149,16 @@ function cell(col, row) {
     td.title = (v === 'nikdy' ? 'Agent zatím neposlal žádná data' : 'Poslední data: ' + fmtDate(row._inv)) +
       (row._agent ? ' · agent ' + row._agent : '');
     return add(td, [el('span', { class: 'dot ' + AGENT_DOT[v] }), v === 'nikdy' ? 'nikdy' : ago(row._inv)]);
+  }
+  if (col.key === 'groups') {
+    const td = el('td');
+    let list = [];
+    try { list = JSON.parse(row._groups || '[]'); } catch (e) { list = []; }
+    return add(td, [list.map((g) => groupTag(g.n, g.c))]);
+  }
+  if (col.key === 'logged_user' && '_cur' in row && v && !row._cur) {
+    const td = el('td', { class: 'muted' });
+    return add(td, [v, el('div', { class: 'small' }, 'naposledy ' + (row._login ? ago(row._login) : '–'))]);
   }
   if (col.key === 'hostname' && '_host' in row && !row._host && v) {
     return add(el('td', { class: 'nw muted' }), [v]);
@@ -257,6 +272,7 @@ function dataTable(opts) {
   const st = {
     page: 1, search: '', sort: opts.sort || '', sortDir: opts.sortDir || '',
     columns: (opts.columns || []).slice(), filters: (opts.filters || []).slice(), seq: 0,
+    sel: new Set(), all: false, total: 0, rows: [], groups: null,
   };
   const entity = opts.entity;
   const tbody = el('tbody');
@@ -267,7 +283,7 @@ function dataTable(opts) {
   let timer = null;
   search.addEventListener('input', () => {
     clearTimeout(timer);
-    timer = setTimeout(() => { st.search = search.value; st.page = 1; load(); }, 250);
+    timer = setTimeout(() => { st.search = search.value; st.page = 1; st.all = false; load(); }, 250);
   });
 
   const request = (extra) => Object.assign({
@@ -280,6 +296,7 @@ function dataTable(opts) {
     let data;
     try { data = await api('POST', url, request()); } catch (e) { return fail(e); }
     if (seq !== st.seq) return;
+    st.total = data.total; st.rows = data.rows;
     if (opts.viewId && !st.sort) { st.sort = data.sort; st.sortDir = data.sort_dir; }
     const rowClick = opts.onRow && (opts.rowClickable ? opts.rowClickable(data) : true);
     const keys = data.columns.map((c) => c.key);
@@ -290,7 +307,10 @@ function dataTable(opts) {
       st.columns = next;
       load();
     };
-    thead.replaceChildren(el('tr', null, data.columns.map((c, ci) => el('th', Object.assign({
+    const selTh = opts.selectable ? el('th', { class: 'chk' }, el('input', { type: 'checkbox', 'aria-label': 'Označit vše na stránce',
+      checked: data.rows.length > 0 && data.rows.every((r) => st.sel.has(r._id)),
+      onchange: (e) => { data.rows.forEach((r) => { if (e.target.checked) st.sel.add(r._id); else st.sel.delete(r._id); }); st.all = false; load(); } })) : null;
+    thead.replaceChildren(el('tr', null, selTh, data.columns.map((c, ci) => el('th', Object.assign({
       class: 'sortable' + (c.type === 'num' ? ' num' : ''),
       onclick: () => {
         if (st.sort === c.key) st.sortDir = st.sortDir === 'asc' ? 'desc' : 'asc';
@@ -309,7 +329,10 @@ function dataTable(opts) {
     } : {}), c.label, st.sort === c.key ? (st.sortDir === 'desc' ? ' ▼' : ' ▲') : ''))));
     tbody.replaceChildren(...(data.rows.length ? data.rows.map((r) => el('tr', {
       class: rowClick ? 'click' : '', onclick: rowClick ? () => opts.onRow(r, data) : null,
-    }, data.columns.map((c) => cell(c, r)))) : [el('tr', null, el('td', { class: 'empty', colspan: data.columns.length },
+    }, opts.selectable ? el('td', { class: 'chk', onclick: (e) => e.stopPropagation() }, el('input', { type: 'checkbox', 'aria-label': 'Označit řádek',
+      checked: st.sel.has(r._id) || st.all,
+      onchange: (e) => { if (e.target.checked) st.sel.add(r._id); else { st.sel.delete(r._id); st.all = false; } drawBar(); } })) : null,
+      data.columns.map((c) => cell(c, r)))) : [el('tr', null, el('td', { class: 'empty', colspan: data.columns.length + (opts.selectable ? 1 : 0) },
       st.search || st.filters.length ? 'Podmínkám nic neodpovídá' : (opts.emptyText || 'Zatím žádná data')))]));
     const pages = Math.max(1, Math.ceil(data.total / data.page_size));
     pager.replaceChildren(...[
@@ -317,8 +340,54 @@ function dataTable(opts) {
       pages > 1 ? el('button', { class: 'mini', disabled: st.page <= 1, onclick: () => { st.page--; load(); } }, '‹ Předchozí') : null,
       pages > 1 ? el('span', null, 'Strana ' + st.page + ' z ' + pages) : null,
       pages > 1 ? el('button', { class: 'mini', disabled: st.page >= pages, onclick: () => { st.page++; load(); } }, 'Další ›') : null].filter(Boolean));
+    drawBar();
     chips.replaceChildren(...st.filters.map((f, i) => f.tab ? null : el('span', { class: 'chip' }, filterLabel(entity, f),
       opts.adhoc ? el('button', { 'aria-label': 'Zrušit filtr', onclick: () => { st.filters.splice(i, 1); st.page = 1; load(); } }, '✕') : null)).filter(Boolean));
+  }
+
+  const selBar = el('div', { class: 'selbar' });
+  selBar.style.display = 'none';
+  async function ensureGroups(force) {
+    if (!st.groups || force) { try { st.groups = (await api('GET', '/api/groups')).groups; } catch (e) { st.groups = []; } }
+    return st.groups;
+  }
+  async function bulk(groupId, action) {
+    const body = { action };
+    if (st.all) body.select_all = { filters: st.filters, search: st.search }; else body.device_ids = [...st.sel];
+    const r = await api('POST', '/api/groups/' + groupId + '/members', body);
+    toast((action === 'add' ? 'Přidáno do skupiny: ' : 'Odebráno ze skupiny: ') + r.changed + ' zařízení', 'ok');
+    st.sel.clear(); st.all = false; st.groups = null; load();
+    if (opts.onGroupsChanged) opts.onGroupsChanged();
+  }
+  async function drawBar() {
+    if (!opts.selectable) return;
+    const count = st.all ? st.total : st.sel.size;
+    if (!count) { selBar.style.display = 'none'; selBar.replaceChildren(); return; }
+    selBar.style.display = '';
+    const groups = await ensureGroups();
+    const pick = (label, action) => {
+      const sel = el('select', { 'aria-label': label }, el('option', { value: '' }, label),
+        ...groups.map((g) => el('option', { value: g.id }, g.name)),
+        action === 'add' ? el('option', { value: 'new' }, '+ nová skupina…') : null);
+      sel.addEventListener('change', async () => {
+        const v = sel.value; sel.value = '';
+        if (!v) return;
+        try {
+          if (v === 'new') {
+            const name = el('input', { placeholder: 'Název skupiny' });
+            modal('Nová skupina', field('Název', name), [{ label: 'Zrušit' }, { label: 'Vytvořit a přidat', primary: true, onclick: async () => {
+              const g = await api('POST', '/api/groups', { name: name.value }); await bulk(g.id, 'add');
+            } }]);
+          } else await bulk(v, action);
+        } catch (e) { fail(e); }
+      });
+      return sel;
+    };
+    selBar.replaceChildren(
+      el('strong', null, st.all ? 'Označeno všech ' + st.total + ' odpovídajících' : 'Označeno ' + count),
+      !st.all && st.total > count ? el('button', { class: 'link', onclick: () => { st.all = true; load(); } }, 'Označit všech ' + st.total + ' odpovídajících filtru') : null,
+      pick('Přidat do skupiny…', 'add'), pick('Odebrat ze skupiny…', 'remove'),
+      el('button', { class: 'mini', onclick: () => { st.sel.clear(); st.all = false; load(); } }, 'Zrušit výběr'));
   }
 
   const tools = [search];
@@ -329,7 +398,7 @@ function dataTable(opts) {
     } }, 'Sloupce'));
     tools.push(el('button', { onclick: () => {
       const f = filterBuilder(entity, st.filters);
-      modal('Filtr', f.node, [{ label: 'Zrušit' }, { label: 'Použít', primary: true, onclick: () => { st.filters = f.get(); st.page = 1; load(); } }]);
+      modal('Filtr', f.node, [{ label: 'Zrušit' }, { label: 'Použít', primary: true, onclick: () => { st.filters = f.get(); st.page = 1; st.all = false; load(); } }]);
     } }, 'Filtr'));
   }
   tools.push(el('button', { onclick: () => download(url, request({ export: true }), 'hwsw-' + (entity || 'pohled') + '.csv').catch(fail) }, 'Export CSV'));
@@ -341,12 +410,13 @@ function dataTable(opts) {
   }
   (opts.buttons || []).forEach((b) => tools.push(b));
 
-  const node = el('div', null, el('div', { class: 'toolbar' }, tools), chips,
+  const node = el('div', null, el('div', { class: 'toolbar' }, tools), selBar, chips,
     el('div', { class: 'table-wrap' }, el('table', null, thead, tbody)), pager);
   load();
-  return { node, reload: load, setFilters: (f) => { st.filters = f; st.page = 1; load(); },
+  return { node, reload: load, setFilters: (f) => { st.filters = f; st.page = 1; st.all = false; load(); },
+    refreshGroups: () => { st.groups = null; load(); },
     setView: (v) => { st.filters = v.filters || []; st.columns = v.columns || []; st.sort = v.sort || ''; st.sortDir = v.sortDir || '';
-      st.search = ''; search.value = ''; st.page = 1; load(); } };
+      st.search = ''; search.value = ''; st.page = 1; st.all = false; st.sel.clear(); load(); } };
 }
 
 // ----------------------------------------------------------- prihlaseni
@@ -521,11 +591,70 @@ PAGES.prehled = async (main) => {
 
 // -------------------------------------------------------------- evidence
 
+async function editDeviceGroups(d) {
+  let groups = [];
+  try { groups = (await api('GET', '/api/groups')).groups; } catch (e) { return fail(e); }
+  const have = new Set((d.groups || []).map((g) => g.id));
+  const boxes = groups.map((g) => ({ g, cb: el('input', { type: 'checkbox', checked: have.has(g.id) }) }));
+  const body = groups.length ? el('div', null, boxes.map(({ g, cb }) => el('label', { class: 'check' }, cb, groupTag(g.name, g.color))))
+    : el('p', { class: 'muted' }, 'Zatím žádná skupina. Vytvořte ji na stránce Zařízení tlačítkem Skupiny.');
+  modal('Skupiny zařízení ' + (d.hostname || ''), body, [{ label: 'Zrušit' }, groups.length ? { label: 'Uložit', primary: true, onclick: async () => {
+    await api('PUT', '/api/devices/' + d.id + '/groups', { group_ids: boxes.filter((b) => b.cb.checked).map((b) => b.g.id) });
+    toast('Skupiny uloženy', 'ok'); route();
+  } } : null].filter(Boolean));
+}
+
+async function groupManager(onChange) {
+  const body = el('div');
+  let editing = null;
+  const name = el('input', { placeholder: 'Název skupiny', maxlength: 60 });
+  const desc = el('input', { placeholder: 'Popis (nepovinné)', maxlength: 300 });
+  let color = '#3b82a0';
+  const swatches = el('div', { class: 'swatches' });
+  const list = el('div', { class: 'group-list' });
+  const formTitle = el('h3', null, 'Nová skupina');
+  const saveBtn = el('button', { class: 'primary' }, 'Vytvořit skupinu');
+  let palette = [];
+  function drawSwatches() {
+    swatches.replaceChildren(...palette.map((c) => el('button', { type: 'button', class: 'swatch' + (c === color ? ' on' : ''),
+      style: 'background:' + c, 'aria-label': 'Barva ' + c, onclick: () => { color = c; drawSwatches(); } })));
+  }
+  function reset() { editing = null; name.value = ''; desc.value = ''; color = palette[0] || color; formTitle.textContent = 'Nová skupina'; saveBtn.textContent = 'Vytvořit skupinu'; drawSwatches(); }
+  async function refresh() {
+    const r = await api('GET', '/api/groups');
+    palette = r.colors;
+    if (!palette.includes(color)) color = palette[0];
+    list.replaceChildren(...(r.groups.length ? r.groups.map((g) => el('div', { class: 'group-row' },
+      groupTag(g.name, g.color), el('span', { class: 'muted small' }, g.devices + ' zařízení' + (g.description ? ' · ' + g.description : '')),
+      el('span', { class: 'right row' },
+        el('button', { class: 'mini', onclick: () => { editing = g; name.value = g.name; desc.value = g.description || ''; color = g.color; formTitle.textContent = 'Upravit skupinu'; saveBtn.textContent = 'Uložit změny'; drawSwatches(); name.focus(); } }, 'Upravit'),
+        el('button', { class: 'mini', onclick: async () => {
+          if (!(await confirmBox('Smazat skupinu „' + g.name + '“? Zařízení zůstanou, jen se z ní odeberou.', 'Smazat'))) return;
+          try { await api('DELETE', '/api/groups/' + g.id); await refresh(); onChange(); } catch (e) { fail(e); }
+        } }, 'Smazat'))))
+      : [el('div', { class: 'muted' }, 'Zatím žádná skupina. Vytvořte první níže.')]));
+    drawSwatches();
+  }
+  saveBtn.addEventListener('click', async () => {
+    try {
+      const payload = { name: name.value, description: desc.value, color };
+      if (editing) await api('PUT', '/api/groups/' + editing.id, payload); else await api('POST', '/api/groups', payload);
+      toast('Uloženo', 'ok'); reset(); await refresh(); onChange();
+    } catch (e) { fail(e); }
+  });
+  body.append(list, el('hr'), formTitle, el('div', { class: 'form-grid' }, field('Název', name), field('Popis', desc)),
+    el('div', { class: 'field' }, el('label', null, 'Barva štítku'), swatches),
+    el('div', { class: 'row' }, saveBtn, el('button', { onclick: reset }, 'Zrušit úpravu')));
+  await refresh();
+  modal('Skupiny zařízení', body, [{ label: 'Hotovo', primary: true }]);
+}
+
 PAGES.zarizeni = async (main, parts, params) => {
   if (parts[0]) return deviceDetail(main, parts[0], params.get('view'));
   if (!isAdmin()) return PAGES.prehled(main);
-  pageHead(main, 'Zařízení', 'Vše, co bylo nalezeno v doméně, v IP rozsahu nebo nahlášeno agentem');
-  const PC_COLS = ['hostname', 'agent_state', 'logged_user', 'os_name', 'model', 'online', 'ip'];
+  pageHead(main, 'Zařízení', 'Vše, co bylo nalezeno v doméně, v IP rozsahu nebo nahlášeno agentem',
+    el('button', { onclick: () => groupManager(() => { loadGroupSel(); t.refreshGroups(); }) }, 'Skupiny'));
+  const PC_COLS = ['hostname', 'agent_state', 'logged_user', 'groups', 'os_name', 'model', 'online', 'ip'];
   const NET_COLS = ['hostname', 'device_type', 'online', 'ip', 'mac', 'manufacturer', 'model'];
   const TABS = [
     ['pc', 'Počítače', 'computers', { filters: [{ col: 'is_computer', op: 'eq', value: 'ano', tab: true }], columns: PC_COLS, sort: 'agent_state', sortDir: 'asc' }],
@@ -534,7 +663,7 @@ PAGES.zarizeni = async (main, parts, params) => {
     ['net', 'Síť a tiskárny', 'network', { filters: [{ col: 'is_computer', op: 'eq', value: 'ne', tab: true }], columns: NET_COLS, sort: 'ip', sortDir: 'asc' }],
     ['all', 'Vše', 'total', { filters: [], columns: [], sort: '', sortDir: '' }],
   ];
-  const t = dataTable({ entity: 'devices', adhoc: true, onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
+  const t = dataTable({ entity: 'devices', adhoc: true, selectable: true, onGroupsChanged: () => loadGroupSel(), onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
     filters: TABS[0][3].filters, columns: TABS[0][3].columns, sort: 'agent_state', sortDir: 'asc' });
   const bar = el('div', { class: 'tabs', role: 'tablist' });
   const info = el('div', { class: 'hint', style: 'margin-bottom:10px' });
@@ -544,11 +673,25 @@ PAGES.zarizeni = async (main, parts, params) => {
     counts[ck] = n;
     const b = el('button', { role: 'tab', 'data-key': key, class: key === 'pc' ? 'active' : '', onclick: () => {
       bar.querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-      t.setView(view);
+      curView = view; applyView();
     } }, label, ' ', n);
     return b;
   });
-  bar.append(...buttons);
+  let curView = TABS[0][3];
+  let curGroup = '';
+  const applyView = () => t.setView(Object.assign({}, curView, {
+    filters: curView.filters.concat(curGroup ? [{ col: 'groups', op: 'eq', value: curGroup, tab: true }] : []) }));
+  const groupSel = el('select', { 'aria-label': 'Skupina', onchange: () => { curGroup = groupSel.value; applyView(); } });
+  async function loadGroupSel() {
+    let groups = [];
+    try { groups = (await api('GET', '/api/groups')).groups; } catch (e) { groups = []; }
+    if (curGroup && !groups.some((g) => g.name === curGroup)) curGroup = '';
+    groupSel.replaceChildren(el('option', { value: '' }, 'Skupina: všechny'),
+      ...groups.map((g) => el('option', { value: g.name, selected: g.name === curGroup }, g.name + ' (' + g.devices + ')')));
+    groupSel.style.display = groups.length ? '' : 'none';
+  }
+  loadGroupSel();
+  bar.append(...buttons, el('span', { class: 'right' }, groupSel));
   main.append(bar, info, t.node);
   async function summary() {
     try {
@@ -649,7 +792,11 @@ async function deviceDetail(main, id, viewId) {
       ['Zdroj dat', d.source], ['Agent', d.agent_version], ['Poprvé viděn', fmtDate(d.first_seen)],
       ['Naposledy viděn', fmtDate(d.last_seen)], ['Poslední inventura', fmtDate(d.last_inventory)]])),
     el('div', { class: 'card' }, el('h3', null, 'Uživatel'), kv([
-      ['Přihlášený uživatel', d.logged_user || '—'], ['Jméno', p && p.display_name], ['E-mail', p && p.mail],
+      ['Přihlášený uživatel', !d.logged_user ? '—' : d.user_current || !d.last_login_at ? d.logged_user
+        : d.logged_user + ' (není přihlášen, naposledy ' + fmtDate(d.last_login_at) + ')'],
+      ['Skupiny', el('span', { class: 'row' }, (d.groups || []).length ? d.groups.map((g) => groupTag(g.name, g.color)) : el('span', { class: 'muted' }, 'žádná'),
+        admin ? el('button', { class: 'mini', onclick: () => editDeviceGroups(d) }, 'Změnit') : null)],
+      ['Jméno', p && p.display_name], ['E-mail', p && p.mail],
       ['Oddělení', p && p.department], ['Pozice', p && p.title]]),
       el('h3', { style: 'margin-top:18px' }, 'Evidence'),
       admin ? [el('div', { class: 'form-grid' }, edit('device_type', 'Typ zařízení'), edit('asset_tag', 'Inventární číslo'),

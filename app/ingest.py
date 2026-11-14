@@ -268,12 +268,40 @@ def ingest_inventory(conn, payload):
          s(system.get("bios_version")), user or device["logged_user"], sam_of(user) or device["user_sam"],
          s(payload.get("agent_version"), 20), ts, ts, details_json, device["id"]))
 
+    _track_login(conn, device["id"], user, ts, device["logged_user"], details.get("accounts"))
     _sync_monitors(conn, device["id"], payload.get("monitors"))
     _sync_software(conn, device["id"], payload.get("software"), had_inventory)
     events = []
     if isinstance(payload.get("usb"), list):
         events = sync_usb(conn, device, payload.get("usb"), user)
     return device["id"], events
+
+
+def _track_login(conn, device_id, user, ts, known_user="", accounts=None):
+    """Zapamatuje, zda je uzivatel prave prihlasen, a kdy byl naposledy videt."""
+    if user:
+        conn.execute("UPDATE devices SET user_current=1, last_login_at=? WHERE id=?", (ts, device_id))
+        return
+    conn.execute("UPDATE devices SET user_current=0 WHERE id=?", (device_id,))
+    if not known_user and accounts is not None:
+        best = _profile_fallback(accounts)
+        if best:
+            conn.execute("UPDATE devices SET logged_user=?, user_sam=?, last_login_at=? WHERE id=?",
+                         (best[0], sam_of(best[0]), best[1], device_id))
+
+
+def _profile_fallback(accounts):
+    """Kdyz nikdo neni prihlasen a server nezna zadneho uzivatele: nejnovejsi profil z agenta."""
+    best = None
+    for p in (accounts or {}).get("profiles") or []:
+        if not isinstance(p, dict):
+            continue
+        name, when = s(p.get("user")), s(p.get("last_use"))
+        if not name or not when or name.upper().startswith(("NT ", "S-1-")) or name.lower().endswith("\\defaultuser0"):
+            continue
+        if best is None or when > best[1]:
+            best = (name, when)
+    return best
 
 
 def ingest_usb(conn, payload):
@@ -285,6 +313,7 @@ def ingest_usb(conn, payload):
     conn.execute("UPDATE devices SET online=1, last_seen=?, logged_user=CASE WHEN ?<>'' THEN ? ELSE logged_user END, "
                  "user_sam=CASE WHEN ?<>'' THEN ? ELSE user_sam END WHERE id=?",
                  (now(), user, user, user, sam_of(user), device["id"]))
+    _track_login(conn, device["id"], user, now())
     return device["id"], sync_usb(conn, device, payload.get("usb") or [], user)
 
 
@@ -297,6 +326,7 @@ def ingest_heartbeat(conn, payload):
     conn.execute("UPDATE devices SET online=1, last_seen=?, logged_user=CASE WHEN ?<>'' THEN ? ELSE logged_user END, "
                  "user_sam=CASE WHEN ?<>'' THEN ? ELSE user_sam END WHERE id=?",
                  (now(), user, user, user, sam_of(user), device["id"]))
+    _track_login(conn, device["id"], user, now())
     return True
 
 

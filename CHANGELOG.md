@@ -2,6 +2,15 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.4.0
+- Skupiny zarizeni: tlacitko Skupiny na strance Zarizeni (vytvorit, prejmenovat, barva stitku, smazat);
+  oznacovani radku zaskrtavatky a hromadne "Pridat do skupiny" / "Odebrat ze skupiny" (i "oznacit vsechna odpovidajici filtru");
+  sloupec Skupiny, filtr podle skupiny (i v sablonach pohledu), vyber skupiny nad tabulkou, skupiny v detailu zarizeni.
+- Posledni prihlaseni: kdyz u pocitace nikdo neni prihlasen, zobrazi se posledni zname uzivatel s casem ("naposledy ...");
+  u noveho pocitace se zjisti z profilu Windows. Nove sloupce: Uzivatel je prave prihlasen, Posledni prihlaseni.
+- Databaze: schema verze 3 (nove tabulky skupin, dva sloupce u zarizeni); pred migraci se vytvori overena zaloha.
+- Agent se funkcne nemeni (jen cislo verze); pri zapnute samoaktualizaci si ho agenti stahnou znovu.
+
 ## 1.3.0
 - Stranka Zarizeni: zalozky (Pocitace, Bez agenta, Neaktivni agent, Sit a tiskarny, Vse) s pocty; sloupec "Stav agenta"
   (zelena = data do limitu, zluta = agent neposlal data dele nez limit, cervena = nikdy) a cas poslednich dat.

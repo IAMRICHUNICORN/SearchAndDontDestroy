@@ -393,6 +393,108 @@ def view_data(view_id: int, body: dict = Body(default={}), user=Depends(active_u
             "sort": sort, "sort_dir": sort_dir}
 
 
+# --------------------------------------------------------------- skupiny
+
+GROUP_COLORS = ("#3b82a0", "#2f9e6e", "#c9922b", "#c4573f", "#8a63c7", "#c25a95", "#5b6fd0", "#6b7c85")
+
+
+def _group_body(body, current=None):
+    name = str(body.get("name", current["name"] if current else "")).strip()[:60]
+    if not name:
+        raise HTTPException(400, "Zadejte název skupiny")
+    color = str(body.get("color", current["color"] if current else GROUP_COLORS[0])).strip().lower()
+    if not re.match(r"^#[0-9a-f]{6}$", color):
+        color = GROUP_COLORS[0]
+    desc = str(body.get("description", current["description"] if current else "")).strip()[:300]
+    return name, desc, color
+
+
+def _group_name_taken(conn, name, except_id=None):
+    return any(r["name"].casefold() == name.casefold() and r["id"] != except_id
+               for r in conn.execute("SELECT id, name FROM device_groups"))
+
+
+@app.get("/api/groups")
+def groups_list(user=Depends(admin_user)):
+    with db.db() as conn:
+        rows = conn.execute(
+            "SELECT g.id, g.name, g.description, g.color, "
+            "(SELECT COUNT(*) FROM device_group_members m WHERE m.group_id = g.id) AS devices "
+            "FROM device_groups g ORDER BY g.name COLLATE NOCASE").fetchall()
+    return {"groups": [dict(r) for r in rows], "colors": list(GROUP_COLORS)}
+
+
+@app.post("/api/groups")
+def groups_create(body: dict = Body(...), user=Depends(admin_user)):
+    name, desc, color = _group_body(body)
+    with db.db() as conn:
+        if _group_name_taken(conn, name):
+            raise HTTPException(400, "Skupina s tímto názvem už existuje")
+        cur = conn.execute("INSERT INTO device_groups(name, description, color) VALUES(?,?,?)", (name, desc, color))
+    return {"ok": True, "id": cur.lastrowid}
+
+
+@app.put("/api/groups/{group_id}")
+def groups_update(group_id: int, body: dict = Body(...), user=Depends(admin_user)):
+    with db.db() as conn:
+        row = conn.execute("SELECT * FROM device_groups WHERE id = ?", (group_id,)).fetchone()
+        if row is None:
+            raise HTTPException(404, "Skupina neexistuje")
+        name, desc, color = _group_body(body, row)
+        if _group_name_taken(conn, name, group_id):
+            raise HTTPException(400, "Skupina s tímto názvem už existuje")
+        conn.execute("UPDATE device_groups SET name=?, description=?, color=? WHERE id=?", (name, desc, color, group_id))
+    return {"ok": True}
+
+
+@app.delete("/api/groups/{group_id}")
+def groups_delete(group_id: int, user=Depends(admin_user)):
+    with db.db() as conn:
+        conn.execute("DELETE FROM device_groups WHERE id = ?", (group_id,))  # vazby zmizi kaskadou, zarizeni zustanou
+    return {"ok": True}
+
+
+@app.post("/api/groups/{group_id}/members")
+def groups_members(group_id: int, body: dict = Body(...), user=Depends(admin_user)):
+    """Prida/odebere zarizeni. Zarizeni: device_ids, nebo vse, co odpovida filtru (select_all)."""
+    action = body.get("action")
+    if action not in ("add", "remove"):
+        raise HTTPException(400, "Neplatná akce")
+    with db.db() as conn:
+        if conn.execute("SELECT 1 FROM device_groups WHERE id = ?", (group_id,)).fetchone() is None:
+            raise HTTPException(404, "Skupina neexistuje")
+        sel = body.get("select_all")
+        if isinstance(sel, dict):
+            _m, rows, _t = entities.run_query(conn, "devices", ["hostname"], sel.get("filters"), sel.get("search"),
+                                              limit=5000)
+            ids = [r["_id"] for r in rows]
+        else:
+            ids = [int(i) for i in (body.get("device_ids") or []) if str(i).isdigit()][:5000]
+        changed = 0
+        for device_id in ids:
+            if action == "add":
+                cur = conn.execute("INSERT OR IGNORE INTO device_group_members(group_id, device_id) "
+                                   "SELECT ?, id FROM devices WHERE id = ?", (group_id, device_id))
+            else:
+                cur = conn.execute("DELETE FROM device_group_members WHERE group_id = ? AND device_id = ?",
+                                   (group_id, device_id))
+            changed += cur.rowcount
+    return {"ok": True, "changed": changed, "selected": len(ids)}
+
+
+@app.put("/api/devices/{device_id}/groups")
+def device_groups_set(device_id: int, body: dict = Body(...), user=Depends(admin_user)):
+    ids = [int(i) for i in (body.get("group_ids") or []) if str(i).isdigit()]
+    with db.db() as conn:
+        if conn.execute("SELECT 1 FROM devices WHERE id = ?", (device_id,)).fetchone() is None:
+            raise HTTPException(404, "Zařízení neexistuje")
+        conn.execute("DELETE FROM device_group_members WHERE device_id = ?", (device_id,))
+        for gid in ids:
+            conn.execute("INSERT OR IGNORE INTO device_group_members(group_id, device_id) "
+                         "SELECT id, ? FROM device_groups WHERE id = ?", (device_id, gid))
+    return {"ok": True}
+
+
 # ------------------------------------------------------------- zarizeni
 
 @app.get("/api/devices/{device_id}")
@@ -422,6 +524,8 @@ def device_detail(device_id: int, view: Optional[int] = None, user=Depends(activ
         person = conn.execute("SELECT * FROM ad_users WHERE sam = ?", (device["user_sam"],)).fetchone()
         device["person"] = dict(person) if person and device["user_sam"] else None
         q = lambda sql: [dict(r) for r in conn.execute(sql, (device_id,))]  # noqa: E731
+        device["groups"] = q("SELECT g.id, g.name, g.color FROM device_group_members m JOIN device_groups g "
+                             "ON g.id = m.group_id WHERE m.device_id = ? ORDER BY g.name COLLATE NOCASE")
         device["monitors"] = q("SELECT * FROM monitors WHERE device_id = ? ORDER BY connected DESC, model")
         device["software"] = q("SELECT name, version, publisher, install_date FROM software WHERE device_id = ? "
                                "ORDER BY name COLLATE NOCASE")

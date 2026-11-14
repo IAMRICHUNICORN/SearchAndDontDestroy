@@ -36,6 +36,12 @@ _AGENT_STATE_ORDER = ("CASE WHEN COALESCE(d.last_inventory, '') <> '' THEN "
                       "CASE WHEN d.last_inventory >= datetime('now', '-__STALE__ hours') THEN 2 ELSE 1 END "
                       "WHEN %s = 1 THEN 0 ELSE 3 END" % _IS_COMPUTER)
 
+_GROUPS_TEXT = ("(SELECT GROUP_CONCAT(n, ', ') FROM (SELECT g.name AS n FROM device_group_members m "
+                "JOIN device_groups g ON g.id = m.group_id WHERE m.device_id = d.id ORDER BY g.name COLLATE NOCASE))")
+_GROUPS_JSON = ("(SELECT json_group_array(json_object('n', n, 'c', c)) FROM (SELECT g.name AS n, g.color AS c "
+                "FROM device_group_members m JOIN device_groups g ON g.id = m.group_id WHERE m.device_id = d.id "
+                "ORDER BY g.name COLLATE NOCASE))")
+
 ENTITIES = {
     "devices": {
         "label": "Zařízení (HW a síť)",
@@ -61,6 +67,9 @@ ENTITIES = {
             "disk_gb": ("Disky (GB)", "d.disk_gb", "num"),
             "bios_version": ("BIOS", "d.bios_version", "text"),
             "logged_user": ("Přihlášený uživatel", "d.logged_user", "text"),
+            "user_current": ("Uživatel je právě přihlášen", "d.user_current", "bool"),
+            "last_login_at": ("Poslední přihlášení", "d.last_login_at", "date"),
+            "groups": ("Skupiny", _GROUPS_TEXT, "text"),
             "user_name": ("Jméno uživatele", "u.display_name", "text"),
             "user_mail": ("E-mail uživatele", "u.mail", "text"),
             "department": ("Oddělení", "u.department", "text"),
@@ -102,7 +111,8 @@ ENTITIES = {
                     "os_name", "logged_user", "last_seen"],
         "sort": ("hostname", "asc"),
         # skryte hodnoty radku (pro zobrazeni) a vlastni razeni
-        "extra": {"_inv": "d.last_inventory", "_agent": "d.agent_version", "_host": "d.hostname"},
+        "extra": {"_inv": "d.last_inventory", "_agent": "d.agent_version", "_host": "d.hostname",
+                  "_cur": "d.user_current", "_login": "d.last_login_at", "_groups": _GROUPS_JSON},
         "sort_expr": {"agent_state": _AGENT_STATE_ORDER},
     },
     "software": {
@@ -301,12 +311,49 @@ def _resolve(conn, ent):
     out = dict(ent)
     out["columns"] = {k: (v[0], v[1].replace("__STALE__", hours), v[2]) for k, v in ent["columns"].items()}
     out["sort_expr"] = {k: v.replace("__STALE__", hours) for k, v in (ent.get("sort_expr") or {}).items()}
+    # nazvy skupin porovnavame bez ohledu na velikost pismen i s diakritikou (SQLite to u "Ú"/"ú" neumi)
+    try:
+        out["group_ids"] = {r["name"].casefold(): r["id"] for r in conn.execute("SELECT id, name FROM device_groups")}
+    except Exception:
+        out["group_ids"] = {}
     return out
+
+
+_GROUP_EXISTS = ("EXISTS (SELECT 1 FROM device_group_members m JOIN device_groups g ON g.id = m.group_id "
+                 "WHERE m.device_id = d.id AND %s)")
+
+
+def _group_filter(ent, op, value, params):
+    items = [v.strip() for v in str(value).split(",") if v.strip()] if op == "in" else [str(value).strip()]
+    if op in ("eq", "ne", "in"):
+        ids = [ent["group_ids"][v.casefold()] for v in items if v.casefold() in ent.get("group_ids", {})]
+        if not ids:
+            cond = "1 = 0"
+        else:
+            cond = "g.id IN (%s)" % ",".join("?" * len(ids))
+            params.extend(ids)
+        sql = _GROUP_EXISTS % cond
+        return "(NOT %s)" % sql if op == "ne" else "(%s)" % sql
+    if op in ("contains", "not_contains"):
+        cond = "g.name LIKE ? ESCAPE '\\'"
+        params.append("%" + _like(value) + "%")
+    elif op == "starts":
+        cond = "g.name LIKE ? ESCAPE '\\'"
+        params.append(_like(value) + "%")
+    else:
+        if not items:
+            return "(1 = 0)"
+        cond = "g.name COLLATE NOCASE IN (%s)" % ",".join("?" * len(items))
+        params.extend(items)
+    sql = _GROUP_EXISTS % cond
+    return "(NOT %s)" % sql if op in ("ne", "not_contains") else "(%s)" % sql
 
 
 def _filter_sql(ent, f, params):
     expr, typ = ent["columns"][f["col"]][1], ent["columns"][f["col"]][2]
     op, value = f["op"], f["value"]
+    if f["col"] == "groups" and ent["columns"].get("is_computer") and op in ("eq", "ne", "in", "contains", "not_contains", "starts"):
+        return _group_filter(ent, op, value, params)
     if op == "empty":
         return "(%s IS NULL OR %s = '' OR %s = 0)" % (expr, expr, expr) if typ in ("num", "bool") \
             else "(%s IS NULL OR %s = '')" % (expr, expr)
@@ -457,6 +504,8 @@ def agent_summary(conn):
 def distinct_values(conn, entity, col, limit=100):
     """Navrhy hodnot pro filtr (jen textove/logicke sloupce)."""
     ent = _resolve(conn, ENTITIES[entity])
+    if entity == "devices" and col == "groups":
+        return [r["name"] for r in conn.execute("SELECT name FROM device_groups ORDER BY name COLLATE NOCASE")]
     if col not in ent["columns"] or ent["columns"][col][2] != "text":
         return []
     expr = ent["columns"][col][1]
