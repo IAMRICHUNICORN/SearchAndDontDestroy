@@ -32,11 +32,12 @@ _AGENT_STATE = ("CASE WHEN COALESCE(d.last_inventory, '') <> '' THEN "
                 "CASE WHEN d.last_inventory >= datetime('now', '-__STALE__ hours') THEN 'odesílá' ELSE 'neaktivní' END "
                 "WHEN %s = 1 THEN 'nikdy' ELSE '' END" % _IS_COMPUTER)
 # nejhorsi stav prvni: nikdy (0), neaktivni (1), odesila (2), bez agenta (3)
-SECTIONS = ("Počítače", "Servery", "IoT", "Síť a tiskárny")
+SECTIONS = ("Počítače", "Servery", "IoT", "Síťové prvky", "Tiskárny")
 # automaticke zarazeni podle typu; rucni volba (section_manual) ma vzdy prednost
 _SECTION_AUTO = ("CASE "
                  "WHEN d.device_type IN ('server', 'virtuální server') THEN 'Servery' "
-                 "WHEN d.device_type IN ('tiskárna', 'síťové zařízení') THEN 'Síť a tiskárny' "
+                 "WHEN d.device_type = 'tiskárna' THEN 'Tiskárny' "
+                 "WHEN d.device_type = 'síťové zařízení' THEN 'Síťové prvky' "
                  "WHEN %s = 1 THEN 'Počítače' ELSE '' END" % _IS_COMPUTER)
 _SECTION = "COALESCE(d.section_manual, %s)" % _SECTION_AUTO
 
@@ -62,6 +63,51 @@ _IPC_WHERE = ("o.id <> d.id AND d.ip <> '' AND o.ip = d.ip "
 _IP_CONFLICT = "CASE WHEN EXISTS (SELECT 1 FROM devices o WHERE %s) THEN 1 ELSE 0 END" % _IPC_WHERE
 _IP_CONFLICT_WITH = ("(SELECT GROUP_CONCAT(COALESCE(NULLIF(o.hostname, ''), o.ip) || CASE WHEN COALESCE(o.mac, '') <> '' "
                      "THEN ' (' || o.mac || ')' ELSE '' END, ', ') FROM devices o WHERE %s)" % _IPC_WHERE)
+
+def _ver_key(col):
+    """Klic pro porovnani verzi a.b.c podle cisel; neplatna verze = prazdny retezec."""
+    parts, rest = [], col
+    for _ in range(3):
+        parts.append("CAST(substr(%s, 1, instr(%s || '.', '.') - 1) AS INTEGER)" % (rest, rest))
+        rest = "substr(%s, instr(%s || '.', '.') + 1)" % (rest, rest)
+    return ("CASE WHEN %s GLOB '[0-9]*.[0-9]*.[0-9]*' THEN printf('%%05d%%05d%%05d', %s) ELSE '' END"
+            % (col, ", ".join(parts)))
+
+
+# cilova verze agenta pro PC: pripnuta u zarizeni, jinak globalni (__GTARGET__ se dosadi z Nastaveni)
+_AGENT_TARGET = "COALESCE(NULLIF(d.agent_target, ''), __GTARGET__)"
+_VER_STATUS = ("CASE WHEN COALESCE(d.agent_version, '') = '' THEN '' "
+               "WHEN d.agent_version = %(t)s THEN 'aktuální' "
+               "WHEN %(k)s = '' THEN 'neznámá' "
+               "WHEN %(k)s < %(kt)s THEN 'zastaralý' ELSE 'novější' END"
+               % {"t": _AGENT_TARGET, "k": _ver_key("d.agent_version"), "kt": _ver_key(_AGENT_TARGET)})
+_HAS_AGENT = "(COALESCE(d.agent_version, '') <> '' OR COALESCE(d.last_inventory, '') <> '')"
+_SKEW = "ABS(COALESCE(json_extract(d.agent_info, '$.skew_s'), 0))"
+# duvody, proc agent neni v poradku (kazdy kus konci "; ")
+_HEALTH_BAD = (
+    "CASE WHEN %(comp)s = 1 AND COALESCE(d.last_inventory, '') = '' THEN 'agent nikdy neposlal data; ' ELSE '' END || "
+    "CASE WHEN COALESCE(d.agent_error, '') <> '' AND d.agent_error_at >= datetime('now', '-24 hours') "
+    "THEN 'chyba agenta (' || d.agent_error || '); ' ELSE '' END" % {"comp": _IS_COMPUTER})
+_HEALTH_WARN = (
+    "CASE WHEN COALESCE(d.last_inventory, '') <> '' AND d.last_inventory < datetime('now', '-__STALE__ hours') "
+    "THEN 'agent neposlal data déle než __STALE__ h; ' ELSE '' END || "
+    "CASE WHEN %(vs)s = 'zastaralý' THEN 'zastaralá verze agenta; ' WHEN %(vs)s = 'neznámá' THEN 'neznámá verze agenta; ' ELSE '' END || "
+    "CASE WHEN COALESCE(d.last_inventory, '') <> '' AND COALESCE(d.agent_beat, '') >= datetime('now', '-30 minutes') "
+    "AND d.last_inventory < datetime('now', '-__INVH__ hours') THEN 'stará inventura (agent žije); ' ELSE '' END || "
+    "CASE WHEN %(skew)s > 300 THEN 'odchylka hodin oproti serveru; ' ELSE '' END || "
+    "CASE WHEN json_extract(d.agent_info, '$.elevated') = 0 THEN 'agent běží bez práv správce; ' ELSE '' END || "
+    "CASE WHEN json_extract(d.agent_info, '$.usb_watch') = 0 THEN 'USB sledování neběží; ' ELSE '' END || "
+    "CASE WHEN COALESCE(json_array_length(json_extract(d.agent_info, '$.partial')), 0) > 0 "
+    "THEN 'neúplná data (' || json_extract(d.agent_info, '$.partial[0]') || '...); ' ELSE '' END || "
+    "CASE WHEN COALESCE(d.mac, '') <> '' AND EXISTS (SELECT 1 FROM devices o WHERE o.id <> d.id AND o.mac = d.mac "
+    "AND COALESCE(o.agent_version, '') <> '') THEN 'duplicitní MAC (klon?); ' ELSE '' END"
+    % {"vs": _VER_STATUS, "skew": _SKEW})
+_HEALTH = ("CASE WHEN (%(bad)s) <> '' THEN 'chyba' WHEN (%(warn)s) <> '' THEN 'varování' "
+           "WHEN %(has)s THEN 'v pořádku' ELSE '' END" % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT})
+_HEALTH_REASON = "rtrim((%s) || (%s), '; ')" % (_HEALTH_BAD, _HEALTH_WARN)
+# poradi: nejhorsi prvni
+_HEALTH_ORDER = ("CASE WHEN (%(bad)s) <> '' THEN 0 WHEN (%(warn)s) <> '' THEN 1 WHEN %(has)s THEN 2 ELSE 3 END"
+                 % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT})
 
 _GROUPS_TEXT = ("(SELECT GROUP_CONCAT(n, ', ') FROM (SELECT g.name AS n FROM device_group_members m "
                 "JOIN device_groups g ON g.id = m.group_id WHERE m.device_id = d.id ORDER BY g.name COLLATE NOCASE))")
@@ -144,6 +190,15 @@ ENTITIES = {
             "ad_enabled": ("Účet v AD povolen", "d.ad_enabled", "bool"),
             "source": ("Zdroj dat", "d.source", "text"),
             "agent_version": ("Verze agenta", "d.agent_version", "text"),
+            "agent_ver_status": ("Stav verze agenta", _VER_STATUS, "text"),
+            "agent_target_eff": ("Cílová verze agenta", "CASE WHEN COALESCE(d.agent_version, '') = '' THEN '' ELSE " + _AGENT_TARGET + " END", "text"),
+            "agent_pinned": ("Verze agenta připnuta", "CASE WHEN COALESCE(d.agent_target, '') <> '' THEN 1 ELSE 0 END", "bool"),
+            "agent_health": ("Zdraví agenta", _HEALTH, "text"),
+            "agent_health_reason": ("Důvod stavu agenta", _HEALTH_REASON, "text"),
+            "agent_error": ("Poslední chyba agenta", "d.agent_error", "text"),
+            "agent_error_at": ("Čas poslední chyby agenta", "d.agent_error_at", "date"),
+            "agent_beat": ("Poslední kontakt agenta", "d.agent_beat", "date"),
+            "agent_elevated": ("Agent s právy správce", "json_extract(d.agent_info, '$.elevated')", "bool"),
             "first_seen": ("Poprvé viděn", "d.first_seen", "date"),
             "last_seen": ("Naposledy viděn", "d.last_seen", "date"),
             "last_inventory": ("Poslední inventura", "d.last_inventory", "date"),
@@ -154,9 +209,12 @@ ENTITIES = {
         "sort": ("hostname", "asc"),
         # skryte hodnoty radku (pro zobrazeni) a vlastni razeni
         "extra": {"_inv": "d.last_inventory", "_agent": "d.agent_version", "_host": "d.hostname",
+                  "_vstat": _VER_STATUS, "_vtarget": _AGENT_TARGET, "_vpin": "COALESCE(d.agent_target, '')",
+                  "_hreason": _HEALTH_REASON,
                   "_cur": "d.user_current", "_login": "d.last_login_at", "_groups": _GROUPS_JSON,
                   "_ipc": _IP_CONFLICT_WITH},
-        "sort_expr": {"agent_state": _AGENT_STATE_ORDER, "ip": _ip_sort("d.ip")},
+        "sort_expr": {"agent_state": _AGENT_STATE_ORDER, "ip": _ip_sort("d.ip"), "agent_health": _HEALTH_ORDER,
+                      "agent_version": _ver_key("d.agent_version")},
     },
     "software": {
         "label": "Software – instalace",
@@ -239,8 +297,11 @@ ENTITIES = {
             "pid": ("PID", "x.pid", "text"),
             "serial": ("Sériové číslo USB", "x.serial", "text"),
             "event_user": ("Uživatel v čase události", "x.logged_user", "text"),
+            "drive": ("Jednotka", "x.drive", "text"),
+            "label": ("Název svazku", "x.label", "text"),
+            "delta_mb": ("Změna obsazeného místa (MB)", "x.delta_mb", "num"),
         }, **_DEVICE_REF),
-        "default": ["ts", "action", "name", "class", "serial", "hostname", "event_user"],
+        "default": ["ts", "action", "name", "label", "serial", "delta_mb", "hostname", "event_user"],
         "sort": ("ts", "desc"),
     },
     "usb_current": {
@@ -255,10 +316,55 @@ ENTITIES = {
             "vid": ("VID", "x.vid", "text"),
             "pid": ("PID", "x.pid", "text"),
             "serial": ("Sériové číslo USB", "x.serial", "text"),
-            "connected_at": ("Připojeno od", "x.connected_at", "date"),
+            "connected_at": ("Připojeno od / viděno poprvé", "x.connected_at", "date"),
+            "source": ("Zdroj", "x.source", "text"),
+            "state": ("Stav", "'připojeno'", "text"),
+            "drive": ("Jednotka", "x.drive", "text"),
+            "label": ("Název svazku", "x.label", "text"),
+            "fs": ("Souborový systém", "x.fs", "text"),
+            "size_gb": ("Velikost (GB)", "x.size_gb", "num"),
+            "used_gb": ("Obsazeno (GB)", "x.used_gb", "num"),
+            "free_gb": ("Volno (GB)", "ROUND(x.size_gb - x.used_gb, 2)", "num"),
+            "delta_mb": ("Změna obsazení od připojení (MB)", "ROUND((x.used_gb - x.used_start_gb) * 1024, 1)", "num"),
+            "encrypted": ("Šifrováno (BitLocker To Go)", "x.encrypted", "text"),
         }, **_DEVICE_REF),
-        "default": ["name", "class", "vid", "pid", "serial", "hostname", "logged_user", "connected_at"],
+        "default": ["state", "name", "label", "size_gb", "used_gb", "encrypted", "serial", "hostname", "logged_user",
+                    "connected_at", "source"],
         "sort": ("connected_at", "desc"),
+    },
+    "usb_files": {
+        "label": "USB – soubory zapsané na úložiště",
+        "from": "usb_files x " + _DEV,
+        "device_id": "x.device_id",
+        "id": "x.id",
+        "columns": dict({
+            "ts": ("Čas", "x.ts", "date"),
+            "action": ("Akce", "x.action", "text"),
+            "path": ("Soubor", "x.path", "text"),
+            "size_bytes": ("Velikost (B)", "x.size_bytes", "num"),
+            "size_mb": ("Velikost (MB)", "ROUND(x.size_bytes / 1048576.0, 2)", "num"),
+            "drive": ("Jednotka", "x.drive", "text"),
+            "event_user": ("Uživatel", "x.logged_user", "text"),
+        }, **_DEVICE_REF),
+        "default": ["ts", "hostname", "event_user", "action", "path", "size_mb", "drive"],
+        "sort": ("ts", "desc"),
+    },
+    "agent_problems": {
+        "label": "Agent – problémy",
+        "from": "agent_problems x",
+        "device_id": None,
+        "id": "x.id",
+        "columns": {
+            "last_ts": ("Naposledy", "x.last_ts", "date"),
+            "first_ts": ("Poprvé", "x.first_ts", "date"),
+            "kind": ("Druh", "x.kind", "text"),
+            "ip": ("IP adresa", "x.ip", "text"),
+            "hostname": ("Počítač", "x.hostname", "text"),
+            "detail": ("Podrobnosti", "x.detail", "text"),
+            "count": ("Počet", "x.count", "num"),
+        },
+        "default": ["last_ts", "kind", "ip", "hostname", "detail", "count"],
+        "sort": ("last_ts", "desc"),
     },
     "licenses": {
         "label": "Licence",
@@ -346,16 +452,33 @@ def stale_hours(conn):
         return 72
 
 
+def _agent_globals(conn):
+    """Globalni cilova verze agenta (jako SQL retezec) a po kolika hodinach je inventura 'stara'."""
+    from . import agentrel
+    try:
+        cfg = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")}
+        target = agentrel.global_target(cfg)
+        invh = str(max(2, 2 * int(float(cfg.get("agent_inventory_hours") or 6)) + 1))
+    except Exception:
+        target, invh = agentrel.current_version(), "13"
+    return "'%s'" % target, invh
+
+
 def _resolve(conn, ent):
     """Dosadi do SQL vyrazu hodnoty z Nastaveni (prah neaktivniho agenta)."""
-    if not any("__STALE__" in v[1] for v in ent["columns"].values()) and not ent.get("sort_expr") \
-            and not any("__STALE__" in v for v in (ent.get("extra") or {}).values()):
+    if not any("__" in v[1] for v in ent["columns"].values()) and not ent.get("sort_expr") \
+            and not any("__" in v for v in (ent.get("extra") or {}).values()):
         return ent
     hours = str(stale_hours(conn))
+    gtarget, invh = _agent_globals(conn)
+
+    def sub(text):
+        return (text.replace("__STALE__", hours).replace("__GTARGET__", gtarget).replace("__INVH__", invh))
+
     out = dict(ent)
-    out["columns"] = {k: (v[0], v[1].replace("__STALE__", hours), v[2]) for k, v in ent["columns"].items()}
-    out["sort_expr"] = {k: v.replace("__STALE__", hours) for k, v in (ent.get("sort_expr") or {}).items()}
-    out["extra"] = {k: v.replace("__STALE__", hours) for k, v in (ent.get("extra") or {}).items()}
+    out["columns"] = {k: (v[0], sub(v[1]), v[2]) for k, v in ent["columns"].items()}
+    out["sort_expr"] = {k: sub(v) for k, v in (ent.get("sort_expr") or {}).items()}
+    out["extra"] = {k: sub(v) for k, v in (ent.get("extra") or {}).items()}
     # nazvy skupin porovnavame bez ohledu na velikost pismen i s diakritikou (SQLite to u "Ú"/"ú" neumi)
     try:
         out["group_ids"] = {r["name"].casefold(): r["id"] for r in conn.execute("SELECT id, name FROM device_groups")}
@@ -547,6 +670,13 @@ def agent_summary(conn):
     out["no_section"] = int(counts.get("", 0))
     out["stale_hours"] = stale_hours(conn)
     out["ip_conflicts"] = ip_conflict_count(conn)
+    vs, health = ent["columns"]["agent_ver_status"][1], ent["columns"]["agent_health"][1]
+    vrow = conn.execute("SELECT COALESCE(SUM(%s = 'aktuální'), 0) AS cur, COALESCE(SUM(%s IN ('zastaralý', 'neznámá')), 0) AS old, "
+                        "COALESCE(SUM(%s = 'novější'), 0) AS newer, COALESCE(SUM(%s = 'v pořádku'), 0) AS h_ok, "
+                        "COALESCE(SUM(%s = 'varování'), 0) AS h_warn, COALESCE(SUM(%s = 'chyba'), 0) AS h_bad "
+                        "FROM devices d" % (vs, vs, vs, health, health, health)).fetchone()
+    out.update({k: int(vrow[k]) for k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad")})
+    out["pinned"] = int(conn.execute("SELECT COUNT(*) FROM devices WHERE COALESCE(agent_target, '') <> ''").fetchone()[0])
     return out
 
 

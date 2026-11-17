@@ -1,0 +1,8 @@
+[
+  {"version": "1.5.1", "date": "2026-11-14", "legacy": true,
+   "notes": "Starší agent (dodávaný s aplikací 1.3.0 až 1.5.1). Nemá vlastní verzi ani ověření aktualizace."},
+  {"version": "1.6.0", "date": "2026-11-17", "legacy": true,
+   "notes": "Starší agent (aplikace 1.6.0): hlásí jen USB úložiště. Nemá vlastní verzi ani ověření aktualizace."},
+  {"version": "2.0.0", "date": "2026-11-17", "legacy": false,
+   "notes": "Vlastní verze agenta, bezpečná aktualizace s návratem, místní log a hlášení chyb, údaje o USB svazcích, volitelný seznam souborů na USB."}
+]

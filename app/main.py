@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from . import db, discovery, entities, ingest, snapshots, tls
+from . import agentrel, db, discovery, entities, ingest, snapshots, tls
 from .bus import bus
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -121,7 +121,7 @@ def current_user(request: Request):
         raise HTTPException(401, "Nepřihlášen")
     with db.db() as conn:
         row = conn.execute(
-            "SELECT u.id, u.username, u.full_name, u.role, u.must_change FROM sessions s "
+            "SELECT u.id, u.username, u.full_name, u.role, u.must_change, u.lang FROM sessions s "
             "JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires > datetime('now')",
             (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
     if row is None:
@@ -186,6 +186,14 @@ def me(user=Depends(current_user)):
     return dict(user, version=db.APP_VERSION)
 
 
+@app.put("/api/me/lang")
+def me_lang(body: dict = Body(...), user=Depends(current_user)):
+    lang = "en" if str(body.get("lang")) == "en" else "cs"
+    with db.db() as conn:
+        conn.execute("UPDATE users SET lang = ? WHERE id = ?", (lang, user["id"]))
+    return {"ok": True, "lang": lang}
+
+
 @app.post("/api/password")
 def change_password(request: Request, body: dict = Body(...), user=Depends(current_user)):
     check_new_password(body.get("new"))
@@ -216,6 +224,11 @@ def dashboard(user=Depends(active_user)):
             "usb_24h": one("SELECT COUNT(*) FROM usb_events WHERE ts >= datetime('now', '-1 day')"),
             "licenses": one("SELECT COUNT(*) FROM licenses"),
             "ip_conflicts": entities.ip_conflict_count(conn) if admin else 0,
+            "agent_versions": ({"target": agentrel.global_target(db.get_settings(conn, decrypt=False)),
+                                "latest": agentrel.current_version()} if admin else None),
+            "agent_summary": ({k: v for k, v in entities.agent_summary(conn).items()
+                               if k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad", "never", "stale", "ok")}
+                              if admin else None),
             "by_type": [dict(r) for r in conn.execute(
                 "SELECT CASE WHEN device_type = '' THEN 'neznámé' ELSE device_type END AS label, COUNT(*) AS n "
                 "FROM devices GROUP BY 1 ORDER BY n DESC LIMIT 12")],
@@ -547,6 +560,18 @@ def device_detail(device_id: int, view: Optional[int] = None, user=Depends(activ
         q = lambda sql: [dict(r) for r in conn.execute(sql, (device_id,))]  # noqa: E731
         device["groups"] = q("SELECT g.id, g.name, g.color FROM device_group_members m JOIN device_groups g "
                              "ON g.id = m.group_id WHERE m.device_id = ? ORDER BY g.name COLLATE NOCASE")
+        try:
+            device["agent_info"] = json.loads(device.get("agent_info") or "{}")
+        except ValueError:
+            device["agent_info"] = {}
+        if user["role"] == "admin":
+            _m, srows, _t = entities.run_query(conn, "devices", ["agent_ver_status", "agent_target_eff", "agent_health",
+                                                                 "agent_health_reason"], only_device=device_id, limit=1)
+            device["agent_status"] = ({k: srows[0][k] for k in ("agent_ver_status", "agent_target_eff", "agent_health",
+                                                                "agent_health_reason")} if srows else None)
+        else:
+            for k in ("agent_info", "agent_error", "agent_error_at", "agent_target", "agent_beat"):
+                device.pop(k, None)
         device["monitors"] = q("SELECT * FROM monitors WHERE device_id = ? ORDER BY connected DESC, model")
         device["software"] = q("SELECT name, version, publisher, install_date FROM software WHERE device_id = ? "
                                "ORDER BY name COLLATE NOCASE")
@@ -575,7 +600,7 @@ def device_delete(device_id: int, user=Depends(admin_user)):
 
 
 BULK_DELETE = {"devices": "devices", "monitors": "monitors", "licenses": "licenses", "usb_events": "usb_events",
-               "sw_changes": "sw_changes"}
+               "sw_changes": "sw_changes", "usb_files": "usb_files", "agent_problems": "agent_problems"}
 
 
 @app.post("/api/bulk-delete")
@@ -859,10 +884,11 @@ def _merged_settings(conn, body):
 def settings_put(body: dict = Body(...), user=Depends(admin_user)):
     numeric = {"ad_interval_min": (15, 10080), "scan_interval_min": (5, 10080), "winrm_interval_min": (60, 43200),
                "agent_inventory_hours": (1, 168), "offline_after_min": (5, 1440), "agent_stale_hours": (1, 8760), "backup_hour": (0, 23),
-               "backup_keep": (1, 365), "usb_events_keep_days": (7, 3650)}
+               "backup_keep": (1, 365), "usb_events_keep_days": (7, 3650), "usb_files_days": (1, 3650),
+               "agent_problems_days": (1, 365)}
     with db.db() as conn:
         for key in db.DEFAULT_SETTINGS:
-            if key not in body:
+            if key not in body or key in ("agent_target_version", "agent_target_gen"):
                 continue
             value = str(body[key]).strip()
             if key in db.SECRET_SETTINGS and value == MASK:
@@ -921,19 +947,51 @@ def _agent_token():
         return db.get_settings(conn, decrypt=False).get("agent_token", "")
 
 
+def _client_ip(request):
+    return request.client.host if request.client else ""
+
+
+def _problem(request, kind, detail, hostname=""):
+    """Zaznamena odmitnuty pozadavek agenta (nesmi nikdy shodit samotny pozadavek)."""
+    try:
+        with db.db() as conn:
+            ingest.record_problem(conn, _client_ip(request), hostname, kind, detail)
+    except Exception:
+        pass
+
+
 def _check_agent(request: Request):
     given = request.headers.get("x-agent-token", "")
     token = _agent_token()
     if not token or not hmac.compare_digest(given.encode(), token.encode()):
+        _problem(request, "odmítnutý token", "neplatný nebo chybějící token agenta")
         raise HTTPException(401, "Neplatný token agenta")
     if int(request.headers.get("content-length") or 0) > 8 * 1024 * 1024:
+        _problem(request, "chybná data", "příliš velký požadavek")
         raise HTTPException(413, "Příliš velká data")
 
 
-def _agent_reply(conn):
+def _agent_reply(conn, request=None, hostname="", reported_version=""):
+    """Odpoved agentovi: interval inventury, cilova verze (podle PC, jinak globalni), SHA-256 cile a povoleni sledovani souboru USB.
+    Starsi agenti (pred 2.0.0) znaji jen agent_version = globalni cil a stahuji soubor bez udani verze."""
     cfg = db.get_settings(conn, decrypt=False)
-    return {"ok": True, "agent_version": db.APP_VERSION, "autoupdate": cfg["agent_autoupdate"] == "1",
-            "inventory_hours": int(cfg["agent_inventory_hours"] or 6)}
+    gtarget = agentrel.global_target(cfg)
+    pinned = ""
+    if hostname:
+        row = conn.execute("SELECT agent_target FROM devices WHERE hostname = ? ORDER BY id LIMIT 1", (hostname,)).fetchone()
+        pinned = (row["agent_target"] if row else "") or ""
+    target = agentrel.effective_target(cfg, pinned)
+    reply = {"ok": True, "agent_version": gtarget, "autoupdate": True,
+             "inventory_hours": int(cfg["agent_inventory_hours"] or 6),
+             "target_version": target, "target_gen": int(cfg.get("agent_target_gen") or 1),
+             "usb_files": cfg.get("usb_files_enabled") == "1"}
+    if request is not None and not agentrel.is_legacy(reported_version):
+        base = _base_url(request, cfg)
+        try:
+            reply["sha256"] = agentrel.sha256(agentrel.render(target, base, cfg.get("agent_token", ""), "watch", _cert_pin(base)))
+        except OSError:
+            reply["target_version"] = reported_version
+    return reply
 
 
 def _ps_unwrap(value):
@@ -954,8 +1012,9 @@ def agent_inventory(request: Request, body: dict = Body(...)):
     try:
         with db.db() as conn:
             device_id, events = ingest.ingest_inventory(conn, body)
-            reply = _agent_reply(conn)
+            reply = _agent_reply(conn, request, ingest.short_host(body.get("hostname")), ingest.s(body.get("agent_version"), 20))
     except ValueError as exc:
+        _problem(request, "chybná data", str(exc), ingest.short_host(body.get("hostname")))
         raise HTTPException(400, str(exc))
     for ev in events:
         bus.publish(dict(ev, type="usb"))
@@ -969,7 +1028,7 @@ def agent_usb(request: Request, body: dict = Body(...)):
     body = _ps_unwrap(body)
     with db.db() as conn:
         device_id, events = ingest.ingest_usb(conn, body)
-        reply = _agent_reply(conn)
+        reply = _agent_reply(conn, request, ingest.short_host(body.get("hostname")), ingest.s(body.get("agent_version"), 20))
     for ev in events:
         bus.publish(dict(ev, type="usb"))
     reply["known"] = device_id is not None
@@ -979,48 +1038,114 @@ def agent_usb(request: Request, body: dict = Body(...)):
 @app.post("/api/agent/heartbeat")
 def agent_heartbeat(request: Request, body: dict = Body(...)):
     _check_agent(request)
+    body = _ps_unwrap(body)
     with db.db() as conn:
         known = ingest.ingest_heartbeat(conn, body)
-        reply = _agent_reply(conn)
+        reply = _agent_reply(conn, request, ingest.short_host(body.get("hostname")), ingest.s(body.get("agent_version"), 20))
     reply["known"] = known
     return reply
 
 
 @app.get("/agent/hwsw-agent.ps1")
-def agent_script(request: Request, token: str = "", mode: str = "once"):
+def agent_script(request: Request, token: str = "", mode: str = "once", version: str = ""):
     real = _agent_token()
     if not real or not hmac.compare_digest(token.encode(), real.encode()):
+        _problem(request, "odmítnutý token", "stažení agenta s neplatným tokenem")
         raise HTTPException(401, "Neplatný token agenta")
     if mode not in ("once", "watch", "install", "uninstall", "test"):
         mode = "once"
     with db.db() as conn:
         cfg = db.get_settings(conn, decrypt=False)
-    with open(os.path.join(APP_DIR, "agent", "hwsw-agent.ps1"), encoding="utf-8") as f:
-        script = f.read()
+    # bez udane verze (instalace z GPO, starsi agenti) dostanou globalni cilovou verzi
+    version = version if version and agentrel.known(version) else agentrel.global_target(cfg)
     base = _base_url(request, cfg)
     if not re.match(r"^https?://[A-Za-z0-9._~:/\[\]%-]+$", base):
         raise HTTPException(400, "Neplatná adresa serveru")
-    script = (script.replace("__SERVER_URL__", base).replace("__TOKEN__", real)
-              .replace("__MODE__", mode).replace("__VERSION__", db.APP_VERSION)
-              .replace("__CERT_PIN__", _cert_pin(base)))
-    return Response("﻿" + script, media_type="text/plain; charset=utf-8")
+    try:
+        data = agentrel.render(version, base, real, mode, _cert_pin(base))
+    except OSError:
+        raise HTTPException(404, "Tato verze agenta není k dispozici")
+    return Response(data, media_type="text/plain; charset=utf-8")
+
+
+# ------------------------------------------------------- verze agenta
+
+def _bump_gen(conn):
+    gen = ingest.num(db.get_settings(conn, decrypt=False).get("agent_target_gen"), 1) + 1
+    db.set_setting(conn, "agent_target_gen", str(gen))
+
+
+@app.get("/api/agent-releases")
+def agent_releases(user=Depends(admin_user)):
+    """Dostupne verze agenta, globalni cil a pocty pocitacu podle verze."""
+    with db.db() as conn:
+        cfg = db.get_settings(conn, decrypt=False)
+        counts = {r["v"]: r["n"] for r in conn.execute(
+            "SELECT agent_version AS v, COUNT(*) AS n FROM devices WHERE agent_version <> '' GROUP BY 1")}
+        pinned = {r["v"]: r["n"] for r in conn.execute(
+            "SELECT agent_target AS v, COUNT(*) AS n FROM devices WHERE COALESCE(agent_target, '') <> '' GROUP BY 1")}
+    rel = agentrel.releases()
+    known = {r["version"] for r in rel}
+    return {"latest": agentrel.current_version(), "target": agentrel.global_target(cfg),
+            "pinned_global": bool((cfg.get("agent_target_version") or "").strip()),
+            "versions": [dict(r, devices=counts.get(r["version"], 0), pinned=pinned.get(r["version"], 0)) for r in rel],
+            "other": sorted(({"version": v, "devices": n} for v, n in counts.items() if v not in known),
+                            key=lambda x: -x["devices"])}
+
+
+@app.put("/api/agent-target")
+def agent_target_set(body: dict = Body(...), user=Depends(admin_user)):
+    """Globalni cilova verze agenta: "" = nejnovejsi (automaticky), jinak konkretni verze z archivu."""
+    version = str(body.get("version") or "").strip()
+    if version and not agentrel.known(version):
+        raise HTTPException(400, "Neznámá verze agenta")
+    if version == agentrel.current_version():
+        version = ""
+    with db.db() as conn:
+        db.set_setting(conn, "agent_target_version", version)
+        _bump_gen(conn)
+    return {"ok": True}
+
+
+@app.post("/api/devices/agent-version")
+def devices_agent_version(body: dict = Body(...), user=Depends(admin_user)):
+    """Pripne verzi agenta ke zvolenym PC (version), nebo vrati ridit se globalnim cilem (version = null). Jen verze od 2.0.0."""
+    version = body.get("version")
+    if version is not None:
+        version = str(version).strip()
+        if not agentrel.known(version):
+            raise HTTPException(400, "Neznámá verze agenta")
+        if agentrel.is_legacy(version):
+            raise HTTPException(400, "Starší verze než 2.0.0 nelze připnout k jednomu PC, jen nastavit globálně")
+    with db.db() as conn:
+        ids = _selected_ids(conn, body)
+        changed = 0
+        for device_id in ids:
+            changed += conn.execute("UPDATE devices SET agent_target = ? WHERE id = ?", (version or None, device_id)).rowcount
+        if changed:
+            _bump_gen(conn)
+    return {"ok": True, "changed": changed, "selected": len(ids)}
 
 
 @app.get("/api/agent-info")
-def agent_info(request: Request, user=Depends(admin_user)):
+def agent_info(request: Request, version: str = "", user=Depends(admin_user)):
+    """Prikazy pro instalaci/test agenta. version: verze, kterou prikazy stahnou (jinak globalni cil)."""
     with db.db() as conn:
         cfg = db.get_settings(conn, decrypt=False)
         agents = conn.execute("SELECT COUNT(*) FROM devices WHERE agent_version <> ''").fetchone()[0]
     base, token = _base_url(request, cfg), cfg.get("agent_token", "")
     url = "%s/agent/hwsw-agent.ps1?token=%s&mode=" % (base, token)
+    suffix = "&version=" + version if version and agentrel.known(version) else ""
     pin = _cert_pin(base)
 
     def one(mode):
-        return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"' % tls.bootstrap_ps(url + mode, pin)
+        return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"' % tls.bootstrap_ps(url + mode + suffix, pin)
 
     return {"server_url": base, "server_url_set": bool(cfg.get("server_url")), "token": token, "agents": agents,
             "install": one("install"), "once": one("once"), "test": one("test"), "uninstall": one("uninstall"),
-            "download": url + "watch", "tls": tls.enabled(), "cert_thumbprint": pin}
+            "download": url + "watch" + suffix, "tls": tls.enabled(), "cert_thumbprint": pin,
+            "latest": agentrel.current_version(), "target": agentrel.global_target(cfg),
+            "version": version if suffix else ""}
 
 
 @app.get("/api/tls/cert")

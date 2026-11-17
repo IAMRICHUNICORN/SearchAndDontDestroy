@@ -253,6 +253,55 @@ MIGRATIONS = [
         "DELETE FROM usb_events WHERE class <> 'úložiště'",
         "DELETE FROM usb_current WHERE class <> 'úložiště'",
     ],
+    [
+        # verze 1.7.0: verze a zdravi agenta, problemy agentu, USB svazky a soubory, jazyk uzivatele, rozdeleni sekci
+        # agent_target: NULL = podle globalniho cile (Nastaveni), jinak pripnuta verze agenta pro tento PC
+        "ALTER TABLE devices ADD COLUMN agent_target TEXT",
+        "ALTER TABLE devices ADD COLUMN agent_error TEXT DEFAULT ''",
+        "ALTER TABLE devices ADD COLUMN agent_error_at TEXT DEFAULT ''",
+        "ALTER TABLE devices ADD COLUMN agent_info TEXT DEFAULT '{}'",
+        "ALTER TABLE devices ADD COLUMN agent_beat TEXT DEFAULT ''",
+        """CREATE TABLE agent_problems (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            first_ts TEXT NOT NULL,
+            last_ts TEXT NOT NULL,
+            ip TEXT DEFAULT '',
+            hostname TEXT DEFAULT '',
+            kind TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            count INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(ip, kind, detail))""",
+        "ALTER TABLE usb_current ADD COLUMN drive TEXT DEFAULT ''",
+        "ALTER TABLE usb_current ADD COLUMN label TEXT DEFAULT ''",
+        "ALTER TABLE usb_current ADD COLUMN fs TEXT DEFAULT ''",
+        "ALTER TABLE usb_current ADD COLUMN size_gb REAL",
+        "ALTER TABLE usb_current ADD COLUMN used_gb REAL",
+        "ALTER TABLE usb_current ADD COLUMN used_start_gb REAL",
+        "ALTER TABLE usb_current ADD COLUMN encrypted TEXT DEFAULT ''",
+        "ALTER TABLE usb_current ADD COLUMN source TEXT DEFAULT 'připojeno'",
+        "ALTER TABLE usb_events ADD COLUMN drive TEXT DEFAULT ''",
+        "ALTER TABLE usb_events ADD COLUMN label TEXT DEFAULT ''",
+        "ALTER TABLE usb_events ADD COLUMN delta_mb REAL",
+        """CREATE TABLE usb_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            ts TEXT NOT NULL,
+            pnp_id TEXT DEFAULT '',
+            drive TEXT DEFAULT '',
+            path TEXT DEFAULT '',
+            size_bytes INTEGER,
+            action TEXT DEFAULT '',
+            logged_user TEXT DEFAULT '')""",
+        "CREATE INDEX idx_usb_files_device ON usb_files(device_id)",
+        "CREATE INDEX idx_usb_files_ts ON usb_files(ts)",
+        "ALTER TABLE users ADD COLUMN lang TEXT NOT NULL DEFAULT 'cs'",
+        # sekce "Sit a tiskarny" se deli na "Sitove prvky" a "Tiskarny": rucni zarazeni se vraci na automaticke podle typu
+        "UPDATE devices SET section_manual = NULL WHERE section_manual = 'Síť a tiskárny'",
+        # pri aktualizaci serveru, ktery uz ma agenty, zustane cil na dosavadni verzi agenta (1.6.0), dokud administrator
+        # vedome neprepne na nejnovejsi (prvni nasazeni agenta 2.0.0 se tak nerozesle na vsechny PC najednou)
+        "INSERT OR IGNORE INTO settings(key, value) SELECT 'agent_target_version', '1.6.0' "
+        "WHERE EXISTS (SELECT 1 FROM devices WHERE COALESCE(agent_version, '') <> '')",
+    ],
 ]
 
 
@@ -586,6 +635,11 @@ DEFAULT_SETTINGS = {
     "backup_hour": "2",
     "backup_keep": "14",
     "usb_events_keep_days": "365",
+    "agent_target_version": "",      # "" = nejnovejsi verze agenta
+    "agent_target_gen": "1",         # zvysi se pri kazde zmene ciloveho stavu (agent pak zapomene "vadne verze")
+    "usb_files_enabled": "0",        # sledovani souboru zapsanych na USB (vychozi vypnuto)
+    "usb_files_days": "90",
+    "agent_problems_days": "30",
 }
 
 

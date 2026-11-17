@@ -53,8 +53,8 @@ docker compose up -d --build
 
 ```bash
 ./scripts/build-image.sh amd64        # nebo arm64 podle procesoru QNAPu
-# vznikne dist/hwsw-monitor-1.6.0-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
-docker load -i hwsw-monitor-1.6.0-amd64.tar
+# vznikne dist/hwsw-monitor-1.7.0-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
+docker load -i hwsw-monitor-1.7.0-amd64.tar
 docker compose up -d --no-build
 ```
 
@@ -93,7 +93,7 @@ Složka `data/tls/` není součástí kompletní zálohy stahované z webu; zál
 
 ```bash
 ./scripts/update.sh                                   # sestaví novou verzi ze zdrojů
-./scripts/update.sh hwsw-monitor-1.6.0-amd64.tar      # nebo nahraje hotový image
+./scripts/update.sh hwsw-monitor-1.7.0-amd64.tar      # nebo nahraje hotový image
 ```
 
 Co se děje s databází:
@@ -106,6 +106,29 @@ Co se děje s databází:
 Databáze leží ve svazku `./data`, nikdy v image – výměna image se jí nedotkne. Spuštění starší verze nad novější databází aplikace odmítne (nedojde k poškození); návrat ke starší verzi = obnovit zálohu „před aktualizací“.
 
 Při vývoji další verze: zvyšte číslo v `app/VERSION` a změny tabulek přidávejte **jen na konec** seznamu `MIGRATIONS` v `app/db.py`.
+
+## Agent: verze, aktualizace a návrat
+
+- Agent má **vlastní číslo verze** nezávislé na aplikaci (`app/agent/AGENT_VERSION`, nyní 2.0.0). Mění se jen tehdy, když se změní agent.
+- Agenti se **udržují aktuální sami**: při každém spojení se serverem (nejpozději do 5 minut) zjistí svou cílovou verzi. Když se liší od jejich, stáhnou ji, ověří SHA-256, zálohují předchozí soubor a přepnou se – bez restartu počítače.
+- **Pojistka:** pokud se nová verze do 2 minut neohlásí, původní proces vrátí předchozí soubor, zapamatuje si „vadnou verzi" a běží dál. Vadnou verzi už nezkouší, dokud administrátor nezmění cíl.
+- **Návrat na starší verzi:** *Nastavení → Agent: verze a aktualizace*. Výběr konkrétní verze = návrat a zároveň zamknutí (nové verze se nerozesílají, dokud nevrátíte „Nejnovější"). U jednoho PC jde verzi připnout v detailu zařízení (záložka Agent) nebo hromadně v seznamu Zařízení (*Verze agenta*). Připnutí k jednomu PC funguje jen pro agenty od 2.0.0; starší agent (1.x) následuje globální cíl.
+- Agent zapisuje **místní log** (`C:\ProgramData\HWSW-Agent\agent.log`, rotace po 512 KB) a chyby hlásí serveru (sekce *Agent – problémy*, sloupec *Zdraví agenta*).
+
+**Vydání nové verze agenta (postup pro vývoj):**
+1. Upravte `app/agent/hwsw-agent.ps1` a zvyšte číslo v `app/agent/AGENT_VERSION`.
+2. Zkopírujte skript jako `app/agent/releases/hwsw-agent-<verze>.ps1` a přidejte řádek do `app/agent/releases/releases.json` (verze, datum, poznámka). Starší verze v archivu se nikdy nemažou – jsou cílem pro návrat.
+3. Zvyšte i verzi aplikace, doplňte `CHANGELOG.md` a vydejte jako obvykle.
+
+**Instalace přes GPO bez restartu:** startup skript počítače se spouští jen při skutečném startu Windows (rychlé spuštění / Fast Startup ho přeskočí). Doporučená je proto navíc naplánovaná úloha v GPO – postup je přímo na stránce *Agent pro Windows* v aplikaci.
+
+## USB
+
+Evidují se jen **úložná zařízení** (disky, flash). U připojeného úložiště agent hlásí písmeno jednotky, název svazku, souborový systém, velikost, obsazení a stav BitLocker To Go. Při odpojení se v historii uloží **změna obsazeného místa** za dobu připojení. Volitelně (*Nastavení → Agent*, výchozí stav **vypnuto**) lze zapnout **seznam souborů zapsaných na USB** (názvy a velikosti, uchování nastavitelné ve dnech). Sledování jmen souborů zaměstnanců vyžaduje vnitřní směrnici o monitoringu (§ 316 zákoníku práce). Prevenci (zákaz zápisu na výměnné disky, povinné BitLocker To Go) řešte v GPO: *Computer Configuration → Administrative Templates → System → Removable Storage Access → Removable Disks: Deny write access*.
+
+## Jazyk rozhraní
+
+Rozhraní je česky a anglicky (přepínač **CZ / EN** v levém menu a na přihlašovací stránce, volba se ukládá ke každému uživateli). Data, čísla, datum a jednotky zůstávají české. Překlady jsou v `app/static/lang-en.js` (česká věta → anglická); věta bez překladu se zobrazí česky.
 
 ## Zálohy
 
@@ -161,7 +184,9 @@ app/db.py          SQLite, migrace, zálohy a obnova
 app/entities.py    definice pohledů a bezpečné skládání dotazů
 app/ingest.py      zpracování dat z agentů a skenů
 app/discovery.py   Active Directory, sken sítě, WinRM, plánovač
-app/agent/         agent pro Windows (PowerShell)
+app/agent/         agent pro Windows (PowerShell), AGENT_VERSION a archiv verzí v releases/
+app/agentrel.py    verze agenta, cílová verze a vykreslení skriptu
+app/snapshots.py   snímky stavu a porovnání
 app/static/        webové rozhraní
 scripts/           build, aktualizace, záloha celého Dockeru, ukázková data
 ```

@@ -526,6 +526,10 @@ def _tick(state):
             state["cleanup"] = time.time()
             conn.execute("DELETE FROM sessions WHERE expires < datetime('now')")
             conn.execute("DELETE FROM jobs WHERE started < datetime('now', '-60 days')")
+            conn.execute("DELETE FROM agent_problems WHERE last_ts < datetime('now', ?)",
+                         ("-%d days" % max(1, int(cfg["agent_problems_days"] or 30)),))
+            conn.execute("DELETE FROM usb_files WHERE ts < datetime('now', ?)",
+                         ("-%d days" % max(1, int(cfg["usb_files_days"] or 90)),))
             keep = max(7, int(cfg["usb_events_keep_days"] or 365))
             conn.execute("DELETE FROM usb_events WHERE ts < datetime('now', ?)", ("-%d days" % keep,))
             conn.execute("DELETE FROM sw_changes WHERE ts < datetime('now', ?)", ("-%d days" % keep,))

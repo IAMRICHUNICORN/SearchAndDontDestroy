@@ -2,6 +2,27 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.7.0
+- **Verze agenta:** agent má vlastní číslo verze (2.0.0) nezávislé na aplikaci. V Zařízení je sloupec *Verze agenta* se stavem (aktuální / zastaralý /
+  novější / neznámá), u stavu agenta se zobrazuje verze, rychlé filtry *Zastaralý agent* a *Verze připnuta*, na Přehledu souhrn agentů.
+- **Samoaktualizace bez restartu:** trvale zapnutá, kontrola při každém heartbeatu (do 5 minut). Ověření SHA-256, záloha předchozí verze a automatický
+  návrat, pokud se nová verze do 2 minut neohlásí; vadná verze se pak nezkouší znovu, dokud administrátor nezmění cíl.
+- **Návrat na starší verzi:** archiv verzí agenta (vč. 1.5.1 a 1.6.0), globální cílová verze v Nastavení (nejnovější / konkrétní = návrat a zamknutí),
+  připnutí verze k jednomu PC (detail zařízení, hromadně v seznamu), přehled počtu počítačů podle verze.
+- **Diagnostika agenta:** místní log (`agent.log`, rotace), hlášení poslední chyby serveru, sekce *Agent – problémy* (odmítnuté požadavky s IP adresou,
+  chyby nahlášené agenty), sloupec *Zdraví agenta* (v pořádku / varování / chyba s důvodem) a filtry: zastaralá verze, stará inventura, odchylka hodin,
+  bez práv správce, USB sledování neběží, neúplná data, duplicitní MAC.
+- **USB:** jedna řada záložek (Právě připojená / Historie / Soubory na USB), událost „nalezeno při první inventuře", sloupec Stav; údaje o svazku
+  (jednotka, název, souborový systém, velikost, obsazení, BitLocker To Go) a změna obsazeného místa za dobu připojení; volitelný seznam souborů zapsaných
+  na USB (v Nastavení, výchozí stav vypnuto, uchování ve dnech).
+- **Sekce:** „Síť a tiskárny" se dělí na *Síťové prvky* a *Tiskárny* (ruční zařazení do staré sekce se při migraci vrací na automatické podle typu).
+- **Angličtina:** přepínač CZ / EN (ukládá se ke každému uživateli); data, čísla, datum a jednotky zůstávají české.
+- **Instalace přes GPO bez restartu:** postup naplánované úlohy přímo na stránce Agent pro Windows.
+- **Bezpečné první nasazení:** server, který už má agenty, se po aktualizaci nastaví na cílovou verzi 1.6.0 (agenti se nepřepnou sami na 2.0.0).
+  Novou verzi vyzkoušíte na jednom PC (stránka Agent pro Windows: výběr verze v příkazech, pak připnutí v detailu PC) a potom v Nastavení přepnete na
+  „Nejnovější". Čerstvá instalace míří rovnou na nejnovější.
+- Databáze: schéma verze 6 (agent_problems, usb_files, sloupce agenta a USB svazků, jazyk uživatele); před migrací vznikne ověřená záloha.
+
 ## 1.6.0
 - USB: evidují se jen zařízení pro ukládání dat (disky, flash). Agent ostatní (klávesnice, myši, čtečky...) nehlásí
   a server je při příjmu zahazuje i od starších agentů. Při aktualizaci se z databáze jednorázově smažou dosavadní

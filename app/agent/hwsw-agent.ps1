@@ -15,7 +15,18 @@ if ($args.Count -gt 0 -and $args[0]) { $Mode = [string]$args[0] }
 
 $InstallDir = Join-Path $env:ProgramData 'HWSW-Agent'
 $ScriptPath = Join-Path $InstallDir 'hwsw-agent.ps1'
+$LogPath = Join-Path $InstallDir 'agent.log'
+$StatePath = Join-Path $InstallDir 'state.json'
+$StartedPath = Join-Path $InstallDir 'started.txt'
+$RunPath = $MyInvocation.MyCommand.Path
 $TaskName = 'HWSW Agent'
+$script:LastError = $null
+$script:Partial = @()
+$script:UsbWatch = $false
+$script:FilesEnabled = $false
+$script:InvMs = 0
+$script:Watchers = @{}
+$script:FileBuf = @{}
 $ErrorActionPreference = 'Continue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
 
@@ -72,6 +83,61 @@ function Send-Json([string]$Path, $Data) {
     return ($text | ConvertFrom-Json)
 }
 
+function Write-AgentLog([string]$Text) {
+    # mistni log (jen kdyz je agent nainstalovan); po 512 KB se prepne na agent.log.1
+    try {
+        if (-not (Test-Path $InstallDir)) { return }
+        if ((Test-Path $LogPath) -and ((Get-Item $LogPath).Length -gt 524288)) {
+            Move-Item -Path $LogPath -Destination ($LogPath + '.1') -Force
+        }
+        Add-Content -Path $LogPath -Value ('{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $AgentVersion, $Text)
+    } catch {}
+}
+
+function Set-AgentError([string]$Where, $Err) {
+    # zapamatuje posledni chybu (odesle se serveru pri dalsim uspesnem spojeni) a zapise ji do logu
+    $msg = ''
+    try { $msg = [string]$Err.Exception.Message } catch {}
+    if (-not $msg) { try { $msg = [string]$Err } catch {} }
+    $msg = ('{0}: {1}' -f $Where, ($msg -replace '\s+', ' '))
+    if ($msg.Length -gt 250) { $msg = $msg.Substring(0, 250) }
+    $script:LastError = @{ msg = $msg; at = ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')) }
+    Write-AgentLog ('CHYBA ' + $msg)
+}
+
+function Get-AgentInfo {
+    return @{
+        elevated = (Test-Elevated)
+        usb_watch = [bool]$script:UsbWatch
+        usb_files = [bool]$script:FilesEnabled
+        partial = @($script:Partial)
+        inv_ms = [int]$script:InvMs
+        clock = ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))
+        ps = [string]$PSVersionTable.PSVersion
+    }
+}
+
+function Read-State {
+    $st = @{ gen = 0; bad = @() }
+    try {
+        if (Test-Path $StatePath) {
+            $o = Get-Content -Path $StatePath -Raw | ConvertFrom-Json
+            $st.gen = [int]$o.gen
+            $st.bad = @($o.bad | Where-Object { $_ })
+        }
+    } catch {}
+    return $st
+}
+
+function Write-State($St) {
+    try {
+        if (Test-Path $InstallDir) {
+            $json = (@{ gen = [int]$St.gen; bad = @($St.bad) } | ConvertTo-Json -Compress)
+            [IO.File]::WriteAllText($StatePath, $json)
+        }
+    } catch {}
+}
+
 function Wmi([string]$Class, [string]$Filter = '', [string]$Namespace = 'root\cimv2') {
     try {
         if ($Filter) { return @(Get-WmiObject -Namespace $Namespace -Class $Class -Filter $Filter -ErrorAction Stop) }
@@ -101,8 +167,46 @@ function Get-LoggedUser {
     return ''
 }
 
+function Get-VolumeEncrypted([string]$Drive) {
+    # BitLocker To Go: ano = chraneno, ne = nechraneno, prazdne = nezjisteno
+    try {
+        $v = Get-WmiObject -Namespace 'root\cimv2\security\microsoftvolumeencryption' -Class Win32_EncryptableVolume -Filter ("DriveLetter='" + $Drive + "'") -ErrorAction Stop
+        if ($v) { if ([int]$v.ProtectionStatus -eq 1) { return 'ano' } else { return 'ne' } }
+    } catch {}
+    return ''
+}
+
+function Get-UsbVolumes {
+    # svazky USB disku podle serioveho cisla disku: pismeno, nazev, souborovy system, velikost, volne misto, sifrovani
+    $map = @{}
+    foreach ($dd in (Wmi 'Win32_DiskDrive' "InterfaceType='USB'")) {
+        $serial = ''
+        $pnp = [string]$dd.PNPDeviceID
+        if ($pnp) { $serial = ((($pnp -split '\\')[-1]) -split '&')[0] }
+        if (-not $serial) { continue }
+        $list = @()
+        try {
+            $diskId = ([string]$dd.DeviceID).Replace('\', '\\')
+            $parts = @(Get-WmiObject -Query ("ASSOCIATORS OF {Win32_DiskDrive.DeviceID='" + $diskId + "'} WHERE AssocClass=Win32_DiskDriveToDiskPartition") -ErrorAction Stop)
+            foreach ($part in $parts) {
+                $lds = @(Get-WmiObject -Query ("ASSOCIATORS OF {Win32_DiskPartition.DeviceID='" + [string]$part.DeviceID + "'} WHERE AssocClass=Win32_LogicalDiskToPartition") -ErrorAction Stop)
+                foreach ($ld in $lds) {
+                    $list += @{
+                        drive = [string]$ld.DeviceID; label = (Text $ld.VolumeName); fs = (Text $ld.FileSystem)
+                        size_gb = [math]::Round([double]$ld.Size / 1GB, 2); free_gb = [math]::Round([double]$ld.FreeSpace / 1GB, 2)
+                        encrypted = (Get-VolumeEncrypted ([string]$ld.DeviceID))
+                    }
+                }
+            }
+        } catch {}
+        $map[$serial.ToUpper()] = $list
+    }
+    return $map
+}
+
 function Get-UsbList {
     $all = Wmi 'Win32_PnPEntity' "PNPDeviceID LIKE 'USB%'"
+    $volumes = $null
     $storage = @{}
     foreach ($d in $all) {
         $id = [string]$d.PNPDeviceID
@@ -146,9 +250,14 @@ function Get-UsbList {
         else { $class = 'USB zarizeni' }
         # evidujeme jen USB zarizeni pro ukladani dat (disky, flash); klavesnice, mysi apod. ne
         if ($class -ne 'uloziste') { continue }
+        $vols = @()
+        if ($serial) {
+            if ($null -eq $volumes) { $volumes = Get-UsbVolumes }
+            if ($volumes.ContainsKey($serial.ToUpper())) { $vols = @($volumes[$serial.ToUpper()]) }
+        }
         $list += @{
             pnp_id = $id.ToUpper(); name = $name; manufacturer = (Text $d.Manufacturer)
-            vid = $usbVid.ToUpper(); pid = $usbPid.ToUpper(); serial = $serial; class = $class
+            vid = $usbVid.ToUpper(); pid = $usbPid.ToUpper(); serial = $serial; class = $class; volumes = $vols
         }
     }
     return ,$list
@@ -309,9 +418,12 @@ function Get-RegValue([string]$Path, [string]$Name) {
     try { return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name } catch { return $null }
 }
 
-function Invoke-Safe([scriptblock]$Block, $Default) {
-    # chyba v jedne casti inventury nesmi zabranit odeslani ostatnich dat
-    try { return (& $Block) } catch { return $Default }
+function Invoke-Safe([scriptblock]$Block, $Default, [string]$Name = '') {
+    # chyba v jedne casti inventury nesmi zabranit odeslani ostatnich dat; selhana cast se nahlasi jako neuplna data
+    try { return (& $Block) } catch {
+        if ($Name) { $script:Partial = @($script:Partial) + $Name; Write-AgentLog ('inventura - cast ' + $Name + ' selhala: ' + $_.Exception.Message) }
+        return $Default
+    }
 }
 
 function Test-Elevated {
@@ -565,6 +677,7 @@ function Get-NetworkExtra {
 }
 
 function Get-Inventory {
+    $script:Partial = @()
     $cs = Wmi 'Win32_ComputerSystem' | Select-Object -First 1
     $bios = Wmi 'Win32_BIOS' | Select-Object -First 1
     $prod = Wmi 'Win32_ComputerSystemProduct' | Select-Object -First 1
@@ -645,7 +758,7 @@ function Get-Inventory {
     $fqdn = $env:COMPUTERNAME
     if ($domain) { $fqdn = '{0}.{1}' -f $env:COMPUTERNAME, $domain }
     $diskList = Get-Disks
-    $security = Invoke-Safe { Get-Security } @{}
+    $security = Invoke-Safe { Get-Security } @{} 'zabezpeceni'
     $security.disk_health_text = Get-DiskHealthText $diskList $security.disk_failure_predicted
 
     return @{
@@ -676,9 +789,9 @@ function Get-Inventory {
         nics = $nics
         printers = $printers
         security = $security
-        licenses = (Invoke-Safe { Get-Licenses } @{})
-        accounts = (Invoke-Safe { Get-Accounts } @{})
-        network = (Invoke-Safe { Get-NetworkExtra } @{})
+        licenses = (Invoke-Safe { Get-Licenses } @{} 'licence')
+        accounts = (Invoke-Safe { Get-Accounts } @{} 'ucty')
+        network = (Invoke-Safe { Get-NetworkExtra } @{} 'sit')
         monitors = (Get-Monitors)
         software = (Get-Software)
         usb = (Get-UsbList)
@@ -686,28 +799,55 @@ function Get-Inventory {
 }
 
 function Send-Inventory {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     $inv = Get-Inventory
+    $script:InvMs = $sw.ElapsedMilliseconds
+    $inv.info = Get-AgentInfo
+    $sentError = $script:LastError
+    if ($sentError) { $inv.last_error = $sentError }
     $reply = Send-Json '/api/agent/inventory' $inv
+    if ($sentError) { $script:LastError = $null }
+    Write-AgentLog ('inventura odeslana ({0} ms, neuplne casti: {1})' -f $script:InvMs, (@($script:Partial) -join ','))
     return @{ reply = $reply; usb = (Get-UsbSignature $inv.usb) }
 }
 
-function Save-AgentFile {
+function Get-AgentFileHash([string]$Path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [IO.File]::ReadAllBytes($Path)
+        return (($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '')
+    } finally { $sha.Dispose() }
+}
+
+function Save-AgentFile([string]$Version = '', [string]$Sha = '', [string]$Dest = '') {
+    # stahne agenta (dane verze) vedle ciloveho souboru, over konec souboru a SHA-256 a az potom ho vrati
     if (-not (Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null }
     # jen SYSTEM a Administrators - skript bezi jako SYSTEM a obsahuje token
     & icacls.exe $InstallDir /inheritance:r /grant '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
-    $tmp = $ScriptPath + '.new'
+    if (-not $Dest) { $Dest = $ScriptPath }
+    $tmp = $Dest + '.new'
+    $url = $ServerUrl + '/agent/hwsw-agent.ps1?token=' + $Token + '&mode=watch'
+    if ($Version) { $url = $url + '&version=' + $Version }
     $client = New-Object Net.WebClient
-    $client.DownloadFile(($ServerUrl + '/agent/hwsw-agent.ps1?token=' + $Token + '&mode=watch'), $tmp)
+    $client.DownloadFile($url, $tmp)
     $content = [IO.File]::ReadAllText($tmp)
     if (-not $content.TrimEnd().EndsWith('#HWSW-AGENT' + '-END')) {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
         throw 'Stazeny soubor agenta neni kompletni'
     }
-    Move-Item -Path $tmp -Destination $ScriptPath -Force
+    if ($Sha) {
+        $got = Get-AgentFileHash $tmp
+        if ($got -ne $Sha.ToLower()) {
+            Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+            throw 'Kontrolni soucet (SHA-256) stazeneho agenta nesouhlasi'
+        }
+    }
+    return $tmp
 }
 
 function Install-Agent {
-    Save-AgentFile
+    $tmpFile = Save-AgentFile $AgentVersion
+    Move-Item -Path $tmpFile -Destination $ScriptPath -Force
     $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" watch' -f $ScriptPath
     $xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
@@ -757,13 +897,150 @@ function Uninstall-Agent {
     Write-Output 'HWSW agent odinstalovan.'
 }
 
-function Update-Self($Mutex) {
+function Get-UpdateTarget($Reply) {
+    # cilova verze od serveru (pro tento PC), nebo $null kdyz neni co delat
+    if (-not $RunPath -or ($RunPath -ne $ScriptPath)) { return $null }   # jen nainstalovany agent se aktualizuje
+    $target = ''
+    try { $target = [string]$Reply.target_version } catch {}
+    if (-not $target) { try { $target = [string]$Reply.agent_version } catch {} }
+    if (-not $target -or $target -eq $AgentVersion) { return $null }
+    $st = Read-State
+    $gen = 0
+    try { $gen = [int]$Reply.target_gen } catch {}
+    if ($gen -ne $st.gen) { $st.gen = $gen; $st.bad = @(); Write-State $st }   # administrator zmenil cil: vadne verze se zapominaji
+    if (@($st.bad) -contains $target) { return $null }
+    return $target
+}
+
+function Invoke-AgentUpdate($Reply, $Mutex) {
+    # Prepnuti na cilovou verzi (nahoru i dolu). Puvodni proces zustava jako dohled: kdyz se nova verze do 2 minut
+    # neohlasi (soubor started.txt), vrati predchozi soubor, zapamatuje si vadnou verzi a bezi dal.
+    $target = Get-UpdateTarget $Reply
+    if (-not $target) { return }
+    $sha = ''
+    try { $sha = [string]$Reply.sha256 } catch {}
+    $prev = $ScriptPath + '.prev'
+    $tmp = $null
     try {
-        Save-AgentFile
-        if ($Mutex) { $Mutex.ReleaseMutex(); $Mutex.Close() }
-        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" watch' -f $ScriptPath)
-        exit 0
-    } catch {}
+        Write-AgentLog ('aktualizace na verzi ' + $target + ' - stahuji')
+        $tmp = Save-AgentFile $target $sha
+        Copy-Item -Path $ScriptPath -Destination $prev -Force
+        Remove-Item $StartedPath -Force -ErrorAction SilentlyContinue
+        Move-Item -Path $tmp -Destination $ScriptPath -Force
+    } catch {
+        Set-AgentError ('aktualizace na ' + $target) $_
+        if ($tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+        return
+    }
+    $arg = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" watch' -f $ScriptPath
+    try { if ($Mutex) { $Mutex.ReleaseMutex(); $Mutex.Close() } } catch {}
+    $proc = $null
+    try { $proc = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList $arg } catch {}
+    $legacy = $true
+    try { $legacy = ([version]$target).Major -lt 2 } catch {}
+    $ok = $false
+    $waited = 0
+    while ($waited -lt 120) {
+        Start-Sleep -Seconds 2
+        $waited += 2
+        if (Test-Path $StartedPath) {
+            $seen = ''
+            try { $seen = (Get-Content -Path $StartedPath -Raw).Trim() } catch {}
+            if ($seen -eq $target) { $ok = $true; break }
+        }
+        if ((-not $proc) -or $proc.HasExited) { break }
+        if ($legacy -and $waited -ge 60) { $ok = $true; break }   # starsi agent nezapisuje started.txt
+    }
+    if ($ok) { Write-AgentLog ('aktualizace na ' + $target + ' dokoncena'); exit 0 }
+    # navrat k predchozi verzi
+    Write-AgentLog ('nova verze ' + $target + ' se neohlasila - vracim predchozi')
+    try { if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force } } catch {}
+    try { Copy-Item -Path $prev -Destination $ScriptPath -Force } catch {}
+    $st = Read-State
+    $st.bad = @($st.bad) + $target
+    Write-State $st
+    try { Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $arg } catch {}
+    exit 0
+}
+
+# ---- sledovani souboru zapsanych na USB (volitelne, zapina server)
+function Update-UsbWatchers($Usb) {
+    # pro kazdy pripojeny svazek jeden watcher; odpojene / vypnute se zrusi
+    $wanted = @{}
+    if ($script:FilesEnabled) {
+        foreach ($u in @($Usb)) {
+            foreach ($v in @($u.volumes)) {
+                if ($v -and $v.drive) { $wanted[[string]$v.drive] = [string]$u.pnp_id }
+            }
+        }
+    }
+    foreach ($drive in @($script:Watchers.Keys)) {
+        if (-not $wanted.ContainsKey($drive)) {
+            $w = $script:Watchers[$drive]
+            foreach ($id in $w.ids) { Unregister-Event -SourceIdentifier $id -ErrorAction SilentlyContinue }
+            try { $w.w.EnableRaisingEvents = $false; $w.w.Dispose() } catch {}
+            $script:Watchers.Remove($drive)
+        }
+    }
+    foreach ($drive in @($wanted.Keys)) {
+        if ($script:Watchers.ContainsKey($drive)) { continue }
+        try {
+            $fsw = New-Object IO.FileSystemWatcher (($drive + '\'), '*')
+            $fsw.IncludeSubdirectories = $true
+            $fsw.InternalBufferSize = 65536
+            $fsw.NotifyFilter = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Size'
+            $ids = @()
+            foreach ($ev in @('Created', 'Changed', 'Renamed')) {
+                $sid = 'HWSWFile' + $ev + $drive.Replace(':', '')
+                Register-ObjectEvent -InputObject $fsw -EventName $ev -SourceIdentifier $sid | Out-Null
+                $ids += $sid
+            }
+            $fsw.EnableRaisingEvents = $true
+            $script:Watchers[$drive] = @{ w = $fsw; ids = $ids; pnp = $wanted[$drive] }
+            Write-AgentLog ('sleduji soubory na ' + $drive)
+        } catch { Set-AgentError ('sledovani souboru ' + $drive) $_ }
+    }
+}
+
+function Receive-UsbFileEvents {
+    # prelozi udalosti watcheru do vyrovnavaci pameti (podle cesty; novejsi prebiji starsi)
+    $n = 0
+    foreach ($e in @(Get-Event | Where-Object { $_.SourceIdentifier -like 'HWSWFile*' })) {
+        if ($n -ge 500) { break }
+        $n++
+        try {
+            $a = $e.SourceEventArgs
+            $path = [string]$a.FullPath
+            $type = [string]$a.ChangeType
+            Remove-Event -EventIdentifier $e.EventIdentifier -ErrorAction SilentlyContinue
+            if ($path -like '*System Volume Information*' -or $path -like '*$RECYCLE.BIN*') { continue }
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            if (-not $item -or $item.PSIsContainer) { continue }
+            $action = 'zapis'
+            if ($type -eq 'Renamed') { $action = 'prejmenovani' }
+            if ($script:FileBuf.Count -lt 2000 -or $script:FileBuf.ContainsKey($path)) {
+                $drive = $path.Substring(0, 2)
+                $pnp = ''
+                if ($script:Watchers.ContainsKey($drive)) { $pnp = $script:Watchers[$drive].pnp }
+                $script:FileBuf[$path] = @{ path = $path; size = [int64]$item.Length; action = $action; drive = $drive; pnp_id = $pnp }
+            }
+        } catch {}
+    }
+}
+
+function Get-UsbFilePayload {
+    $files = @($script:FileBuf.Values | Select-Object -First 500)
+    return $files
+}
+
+function Clear-SentFiles($Files) {
+    foreach ($f in @($Files)) { $script:FileBuf.Remove([string]$f.path) }
+}
+
+function Read-Reply($Reply) {
+    # zapamatuje si nastaveni ze serveru (interval inventury, sledovani souboru USB)
+    try { if ($Reply.inventory_hours) { $script:InventoryHours = [int]$Reply.inventory_hours } } catch {}
+    try { $script:FilesEnabled = [bool]$Reply.usb_files } catch {}
 }
 
 function Watch-Loop {
@@ -771,26 +1048,35 @@ function Watch-Loop {
     $mutex = New-Object Threading.Mutex($true, 'Global\HWSWMonitorAgent', [ref]$created)
     if (-not $created) { return }
 
+    # potvrzeni startu pro dohled pri aktualizaci (soubor started.txt s cislem verze)
+    try { if (Test-Path $InstallDir) { [IO.File]::WriteAllText($StartedPath, $AgentVersion) } } catch {}
+    Write-AgentLog 'agent spusten'
+
     $usbSig = $null
-    $inventoryHours = 6
+    $script:InventoryHours = 6
     $lastInventory = [DateTime]::MinValue
     $lastBeat = Get-Date
     try {
         Register-WmiEvent -Query 'SELECT * FROM Win32_DeviceChangeEvent WHERE EventType = 2 OR EventType = 3' -SourceIdentifier 'HWSWUsb' -ErrorAction Stop
-    } catch {}
+        $script:UsbWatch = $true
+    } catch {
+        $script:UsbWatch = $false
+        Set-AgentError 'sledovani USB (WMI)' $_
+    }
 
     while ($true) {
         $now = Get-Date
-        if (($now - $lastInventory).TotalHours -ge $inventoryHours) {
+        if (($now - $lastInventory).TotalHours -ge $script:InventoryHours) {
             try {
                 $result = Send-Inventory
                 $usbSig = $result.usb
                 $lastInventory = $now
-                if ($result.reply.inventory_hours) { $inventoryHours = [int]$result.reply.inventory_hours }
-                if ($result.reply.autoupdate -and $result.reply.agent_version -ne $AgentVersion) { Update-Self $mutex }
+                Read-Reply $result.reply
+                Invoke-AgentUpdate $result.reply $mutex
             } catch {
-                # server nedostupny - zkusime to znovu za 5 minut
-                $lastInventory = $now.AddHours(-$inventoryHours).AddMinutes(5)
+                # server nedostupny nebo chyba inventury - zkusime to znovu za 5 minut
+                Set-AgentError 'inventura/odeslani' $_
+                $lastInventory = $now.AddHours(-$script:InventoryHours).AddMinutes(5)
             }
         }
 
@@ -801,25 +1087,43 @@ function Watch-Loop {
             Get-Event -SourceIdentifier 'HWSWUsb' -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
             $changed = $true
         }
+        try { Receive-UsbFileEvents } catch {}
         $beat = ((Get-Date) - $lastBeat).TotalMinutes -ge 5
         if ($changed -or $beat) {
             try {
                 $usb = Get-UsbList
                 $sig = Get-UsbSignature $usb
-                if ($sig -ne $usbSig) {
-                    $reply = Send-Json '/api/agent/usb' @{ hostname = $env:COMPUTERNAME; user = (Get-LoggedUser); usb = $usb }
+                $connected = (@($usb).Count -gt 0)
+                if (($sig -ne $usbSig) -or ($beat -and $connected)) {
+                    # soubory zapsane pred odpojenim se odeslou jeste pred zrusenim watcheru
+                    try { Receive-UsbFileEvents } catch {}
+                    $payload = @{ hostname = $env:COMPUTERNAME; user = (Get-LoggedUser); agent_version = $AgentVersion; usb = $usb; info = (Get-AgentInfo) }
+                    $files = @(Get-UsbFilePayload)
+                    if ($files.Count -gt 0) { $payload.files = $files }
+                    $reply = Send-Json '/api/agent/usb' $payload
+                    Clear-SentFiles $files
                     $usbSig = $sig
+                    Read-Reply $reply
                     if (-not $reply.known) { $lastInventory = [DateTime]::MinValue }
                 }
-            } catch {}
+                Update-UsbWatchers $usb
+            } catch { Set-AgentError 'USB' $_ }
         }
         if ($beat) {
             $lastBeat = Get-Date
             try {
-                $reply = Send-Json '/api/agent/heartbeat' @{ hostname = $env:COMPUTERNAME; user = (Get-LoggedUser); agent_version = $AgentVersion }
+                $payload = @{ hostname = $env:COMPUTERNAME; user = (Get-LoggedUser); agent_version = $AgentVersion; info = (Get-AgentInfo) }
+                $sentError = $script:LastError
+                if ($sentError) { $payload.last_error = $sentError }
+                $files = @(Get-UsbFilePayload)
+                if ($files.Count -gt 0) { $payload.files = $files }
+                $reply = Send-Json '/api/agent/heartbeat' $payload
+                if ($sentError) { $script:LastError = $null }
+                Clear-SentFiles $files
+                Read-Reply $reply
                 if (-not $reply.known) { $lastInventory = [DateTime]::MinValue }
-                if ($reply.autoupdate -and $reply.agent_version -ne $AgentVersion) { Update-Self $mutex }
-            } catch {}
+                Invoke-AgentUpdate $reply $mutex
+            } catch { Set-AgentError 'heartbeat' $_ }
         }
     }
 }
@@ -865,7 +1169,10 @@ function Test-Agent {
     & $report 'Monitory (registr/EDID)' { $m = Get-MonitorsFromRegistry; $m = @($m); if ($m.Count) { ($m | ForEach-Object { '{0} {1} {2}"' -f $_.manufacturer, $_.model, $_.size_inch }) -join '; ' } }
     & $report 'Monitory (vysledek agenta)' { $m = Get-Monitors; $m = @($m); if ($m.Count) { ($m | ForEach-Object { '{0} {1}' -f $_.manufacturer, $_.model }) -join '; ' } }
     & $report 'Software' { $s = Get-Software; $s = @($s); if ($s.Count) { '{0} polozek' -f $s.Count } }
-    & $report 'USB zarizeni' { $u = Get-UsbList; $u = @($u); '{0} ks' -f $u.Count }
+    & $report 'USB uloziste' { $u = Get-UsbList; $u = @($u); '{0} ks' -f $u.Count }
+    & $report '  USB svazky (pismeno, system, velikost)' { $u = @(Get-UsbList); $v = @($u | ForEach-Object { $_.volumes } | Where-Object { $_ }); if ($v.Count) { ($v | ForEach-Object { '{0} {1} {2} GB, sifrovano: {3}' -f $_.drive, $_.fs, $_.size_gb, $_.encrypted }) -join '; ' } }
+    & $report 'Agent: nainstalovan, log' { if (Test-Path $InstallDir) { if (Test-Path $LogPath) { 'ano, log ' + [math]::Round((Get-Item $LogPath).Length / 1024) + ' KB' } else { 'ano, bez logu' } } }
+    & $report 'Agent: verze, spusten z instalace' { $AgentVersion + ' / ' + [bool]($RunPath -and ($RunPath -eq $ScriptPath)) }
     $sec = $null
     & $report 'Zabezpeceni (celkem)' { $script:sec = Get-Security; if ($script:sec) { 'zjisteno' } }
     if ($script:sec) {
