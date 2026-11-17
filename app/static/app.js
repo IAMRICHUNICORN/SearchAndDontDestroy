@@ -50,6 +50,14 @@ function setLang(lang) {
 
 // ------------------------------------------------------------ pomocne funkce
 
+// replaceChildren() zapise null/false jako text "null"; vyradime je (stejne jako el()/add()).
+(function () {
+  const orig = Element.prototype.replaceChildren;
+  Element.prototype.replaceChildren = function (...kids) {
+    return orig.apply(this, kids.flat(Infinity).filter((c) => c != null && c !== false));
+  };
+})();
+
 function add(node, kids) {
   for (const c of kids.flat(Infinity)) {
     if (c == null || c === false) continue;
@@ -230,6 +238,11 @@ function cell(col, row) {
     td.title = T('Konflikt IP: stejnou adresu má i ') + row._ipc;
     return add(td, [v, ' ', el('span', { class: 'badge bad' }, '⚠ konflikt')]);
   }
+  if (col.key === 'ip' && row._ipold) {
+    const td = el('td', { class: 'nw' });
+    td.title = T('Stejnou adresu má i starší záznam (offline): ') + row._ipold;
+    return add(td, [v, ' ', el('span', { class: 'badge' }, 'starší záznam')]);
+  }
   const nw = col.type === 'date' || ['hostname', 'ip', 'device_ip', 'mac', 'serial', 'online'].includes(col.key);
   const td = el('td', { class: col.type === 'num' ? 'num' : (nw ? 'nw' : '') });
   if (col.key === 'online') return add(td, [el('span', { class: 'dot' + (v ? ' on' : '') }), v ? 'online' : 'offline']);
@@ -243,6 +256,12 @@ function cell(col, row) {
 }
 
 // ------------------------------------------------- vyber sloupcu a filtry
+
+// seznam sloupcu (nabidka "pridat sloupec", filtry) razeny abecedne podle jazyka rozhrani: cesky (ch za h) / anglicky
+function sortedDefs(defs) {
+  const coll = new Intl.Collator(S.lang === 'en' ? 'en' : 'cs', { sensitivity: 'base', numeric: true });
+  return defs.slice().sort((a, b) => coll.compare(T(a.label), T(b.label)));
+}
 
 function columnPicker(entity, selected) {
   const defs = S.schema.entities[entity].columns;
@@ -265,7 +284,7 @@ function columnPicker(entity, selected) {
       el('button', { class: 'mini', disabled: i === cols.length - 1, title: 'Posunout níž', onclick: () => { cols.splice(i + 1, 0, cols.splice(i, 1)[0]); draw(); } }, '↓'),
       el('button', { class: 'mini', title: 'Odebrat', onclick: () => { cols.splice(i, 1); draw(); } }, '✕'))));
     adder.replaceChildren(el('option', { value: '' }, '+ přidat sloupec…'),
-      ...defs.filter((d) => !cols.includes(d.key)).map((d) => el('option', { value: d.key }, d.label)));
+      ...sortedDefs(defs.filter((d) => !cols.includes(d.key))).map((d) => el('option', { value: d.key }, d.label)));
   }
   adder.addEventListener('change', () => { if (adder.value) { cols.push(adder.value); draw(); } });
   draw();
@@ -294,7 +313,7 @@ function filterBuilder(entity, filters) {
   }
   let listSeq = 0;
   function addRow(f) {
-    const col = el('select', null, defs.map((d) => el('option', { value: d.key, selected: f && f.col === d.key }, d.label)));
+    const col = el('select', null, sortedDefs(defs).map((d) => el('option', { value: d.key, selected: f && f.col === d.key }, d.label)));
     const op = el('select');
     const val = el('input', { value: f ? f.value : '', placeholder: 'hodnota' });
     const listId = 'fl' + (++listSeq);

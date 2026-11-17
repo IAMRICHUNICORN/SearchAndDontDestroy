@@ -453,6 +453,13 @@ def upsert_scanned(conn, host):
     mac = norm_mac(host.get("mac"))
     ip = s(host.get("ip"), 45)
     ts = now()
+    if hostname and mac:
+        # prejmenovane zarizeni (stejna MAC, jiny nazev): zaznam ze skenu/AD jen prejmenujeme, at nevznikne duplicita
+        taken = conn.execute("SELECT 1 FROM devices WHERE hostname = ?", (hostname,)).fetchone()
+        old = conn.execute("SELECT id FROM devices WHERE mac = ? AND source <> 'agent' AND hostname <> '' "
+                           "AND hostname <> ? ORDER BY id LIMIT 1", (mac, hostname)).fetchone()
+        if old and not taken:
+            conn.execute("UPDATE devices SET hostname = ? WHERE id = ?", (hostname, old["id"]))
     device = find_device(conn, hostname, mac, ip, allow_ip=True)
     if device is None and ip:
         # zarizeni zname podle IP (napr. z minuleho skenu bez MAC)

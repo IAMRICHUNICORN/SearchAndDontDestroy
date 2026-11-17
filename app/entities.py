@@ -55,14 +55,19 @@ def _ip_sort(col):
             "ELSE 'z' || COALESCE(%s, '') END" % (col, ", ".join(parts), col))
 
 
-# stejna IP na vice zarizenich, ktera se obe nedavno ozvala (__STALE__ hodin); shodna neprazdna MAC = duplicita, ne konflikt
-_IPC_WHERE = ("o.id <> d.id AND d.ip <> '' AND o.ip = d.ip "
+# konflikt = stejna IP na vice zarizenich, ktera jsou OBA ted online (a nedavno videna); shodna neprazdna MAC = duplicita.
+# Zaznam, ktery uz online neni (napr. stary ERA po vymene za ESMC), konflikt nezpusobuje - jen se ukaze jako starsi zaznam.
+_IPC_WHERE = ("o.id <> d.id AND d.ip <> '' AND o.ip = d.ip AND o.online = 1 AND d.online = 1 "
               "AND o.last_seen >= datetime('now', '-__STALE__ hours') "
               "AND d.last_seen >= datetime('now', '-__STALE__ hours') "
               "AND (COALESCE(o.mac, '') = '' OR COALESCE(d.mac, '') = '' OR o.mac <> d.mac)")
 _IP_CONFLICT = "CASE WHEN EXISTS (SELECT 1 FROM devices o WHERE %s) THEN 1 ELSE 0 END" % _IPC_WHERE
 _IP_CONFLICT_WITH = ("(SELECT GROUP_CONCAT(COALESCE(NULLIF(o.hostname, ''), o.ip) || CASE WHEN COALESCE(o.mac, '') <> '' "
                      "THEN ' (' || o.mac || ')' ELSE '' END, ', ') FROM devices o WHERE %s)" % _IPC_WHERE)
+# starsi zaznamy se stejnou IP, ktere uz nejsou online (zastarale nazvy), pro sede upozorneni u IP
+_IP_OLD_WITH = ("(SELECT GROUP_CONCAT(COALESCE(NULLIF(o.hostname, ''), o.ip), ', ') FROM devices o "
+                "WHERE o.id <> d.id AND d.ip <> '' AND o.ip = d.ip AND o.online = 0 AND d.online = 1)")
+
 
 def _ver_key(col):
     """Klic pro porovnani verzi a.b.c podle cisel; neplatna verze = prazdny retezec."""
@@ -154,6 +159,17 @@ ENTITIES = {
             "ram_gb": ("RAM (GB)", "ROUND(d.ram_mb / 1024.0, 1)", "num"),
             "disk_gb": ("Disky (GB)", "d.disk_gb", "num"),
             "bios_version": ("BIOS", "d.bios_version", "text"),
+            "bios_date": ("Datum BIOSu", "COALESCE(json_extract(d.details, '$.system.bios_date'), '')", "text"),
+            "os_build": ("Číslo sestavení Windows", "COALESCE(json_extract(d.details, '$.os.build'), '')", "text"),
+            "os_install_date": ("Datum instalace OS", "COALESCE(json_extract(d.details, '$.os.install_date'), '')", "text"),
+            "last_boot": ("Poslední restart", "COALESCE(json_extract(d.details, '$.os.last_boot'), '')", "text"),
+            "uptime_days": ("Doba od restartu (dny)",
+                            "CASE WHEN COALESCE(json_extract(d.details, '$.os.last_boot'), '') <> '' "
+                            "THEN ROUND(julianday('now', 'localtime') - julianday(json_extract(d.details, '$.os.last_boot')), 1) END",
+                            "num"),
+            "sys_free_gb": ("Volné místo na systémovém disku (GB)",
+                            "(SELECT json_extract(v.value, '$.free_gb') FROM json_each(d.details, '$.volumes') v "
+                            "ORDER BY (json_extract(v.value, '$.drive') = 'C:') DESC LIMIT 1)", "num"),
             "logged_user": ("Přihlášený uživatel", "d.logged_user", "text"),
             "user_current": ("Uživatel je právě přihlášen", "d.user_current", "bool"),
             "last_login_at": ("Poslední přihlášení", "d.last_login_at", "date"),
@@ -212,7 +228,7 @@ ENTITIES = {
                   "_vstat": _VER_STATUS, "_vtarget": _AGENT_TARGET, "_vpin": "COALESCE(d.agent_target, '')",
                   "_hreason": _HEALTH_REASON,
                   "_cur": "d.user_current", "_login": "d.last_login_at", "_groups": _GROUPS_JSON,
-                  "_ipc": _IP_CONFLICT_WITH},
+                  "_ipc": _IP_CONFLICT_WITH, "_ipold": _IP_OLD_WITH},
         "sort_expr": {"agent_state": _AGENT_STATE_ORDER, "ip": _ip_sort("d.ip"), "agent_health": _HEALTH_ORDER,
                       "agent_version": _ver_key("d.agent_version")},
     },

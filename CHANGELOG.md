@@ -2,6 +2,15 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.7.1
+- **Oprava:** v Nastavení → Agent se pod tabulkou verzí zobrazoval text „null".
+- **Konflikt IP:** hlásí se jen tehdy, když jsou oba záznamy se stejnou IP online a mají různou MAC. Starší offline záznam (např. po výměně serveru) má
+  u IP šedý štítek „starší záznam" místo falešného konfliktu.
+- **Aktuální názvy:** zařízení ze skenu sítě/AD se při změně názvu (stejná MAC) přejmenuje, nevzniká duplicita.
+- **Výběr sloupců:** nabídka „+ přidat sloupec" a filtry jsou řazeny abecedně podle jazyka (česky / anglicky).
+- **Nové sloupce v Zařízeních:** Datum BIOSu, Číslo sestavení Windows, Datum instalace OS, Poslední restart, Doba od restartu (dny),
+  Volné místo na systémovém disku (GB). Agent je posílá už od 2.0.0, nová verze agenta není potřeba.
+
 ## 1.7.0
 - **Verze agenta:** agent má vlastní číslo verze (2.0.0) nezávislé na aplikaci. V Zařízení je sloupec *Verze agenta* se stavem (aktuální / zastaralý /
   novější / neznámá), u stavu agenta se zobrazuje verze, rychlé filtry *Zastaralý agent* a *Verze připnuta*, na Přehledu souhrn agentů.
