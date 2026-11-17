@@ -5,9 +5,9 @@ Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CH
 
 ## Cekaji na dalsi vydani
 
-(zatim nic - vsechny polozky jsou ve verzi 1.7.0, ceka na "vydej")
+(zatim nic)
 
-## Hotovo ve verzi 1.7.0 (implementovano a otestovano lokalne, necommitnuto)
+## Hotovo (vydano) ve verzi 1.7.0
 A1-A6 verze agenta, samoaktualizace, navrat, verze u PC, GPO postup; B1-B3 diagnostika a zdravi agenta;
 C1-C4 USB (stranka, svazky, soubory); D1 sekce Sitove prvky / Tiskarny; D2 anglictina CZ/EN.
 
