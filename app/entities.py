@@ -20,6 +20,20 @@ _DEVICE_REF = {
     "device_type": ("Typ zařízení", "d.device_type", "text"),
 }
 
+
+def _vkey4(col):
+    """Klic pro porovnani verzi o az 4 castech podle cisel (10.0 je vetsi nez 9.0)."""
+    parts, rest = [], col
+    for _ in range(4):
+        parts.append("CAST(substr(%s, 1, instr(%s || '.', '.') - 1) AS INTEGER)" % (rest, rest))
+        rest = "substr(%s, instr(%s || '.', '.') + 1)" % (rest, rest)
+    return "printf('%%08d%%08d%%08d%%08d', %s)" % ", ".join(parts)
+
+
+def _sw_version(order):
+    return ("(SELECT s2.version FROM software s2 WHERE s2.name = x.name AND s2.publisher = x.publisher "
+            "AND COALESCE(s2.version, '') <> '' ORDER BY %s %s LIMIT 1)" % (_vkey4("s2.version"), order))
+
 _LIC_USED = ("(SELECT COUNT(DISTINCT s.device_id) FROM software s "
              "WHERE x.match_pattern <> '' AND s.name LIKE x.match_pattern)")
 
@@ -89,16 +103,27 @@ _VER_STATUS = ("CASE WHEN COALESCE(d.agent_version, '') = '' THEN '' "
 _HAS_AGENT = "(COALESCE(d.agent_version, '') <> '' OR COALESCE(d.last_inventory, '') <> '')"
 _SKEW = "ABS(COALESCE(json_extract(d.agent_info, '$.skew_s'), 0))"
 # duvody, proc agent neni v poradku (kazdy kus konci "; ")
+# chyba spojeni se serverem (sit, restart serveru): je "prechodna", kdyz se agent zase ozval; zdravi nebarvi na cerveno
+_TRANS = ("(d.agent_error LIKE '%nelze připojit%' OR d.agent_error LIKE '%Unable to connect%' OR d.agent_error LIKE '%timed out%' "
+          "OR d.agent_error LIKE '%Operace vypršela%' OR d.agent_error LIKE '%nelze přeložit%' OR d.agent_error LIKE '%could not be resolved%' "
+          "OR d.agent_error LIKE '%connection was closed%' OR d.agent_error LIKE '%připojení bylo zavřeno%' "
+          "OR d.agent_error LIKE '%No connection could be made%' OR d.agent_error LIKE '%Nebylo možné navázat%')")
+_BEAT_OK = "COALESCE(d.agent_beat, '') >= datetime('now', '-30 minutes')"
 _HEALTH_BAD = (
     "CASE WHEN %(comp)s = 1 AND COALESCE(d.last_inventory, '') = '' THEN 'agent nikdy neposlal data; ' ELSE '' END || "
     "CASE WHEN COALESCE(d.agent_error, '') <> '' AND d.agent_error_at >= datetime('now', '-24 hours') "
-    "THEN 'chyba agenta (' || d.agent_error || '); ' ELSE '' END" % {"comp": _IS_COMPUTER})
+    "AND (%(trans)s = 0 OR NOT %(beat)s) THEN 'chyba agenta (' || d.agent_error || '); ' ELSE '' END"
+    % {"comp": _IS_COMPUTER, "trans": _TRANS, "beat": _BEAT_OK})
 _HEALTH_WARN = (
     "CASE WHEN COALESCE(d.last_inventory, '') <> '' AND d.last_inventory < datetime('now', '-__STALE__ hours') "
     "THEN 'agent neposlal data déle než __STALE__ h; ' ELSE '' END || "
     "CASE WHEN %(vs)s = 'zastaralý' THEN 'zastaralá verze agenta; ' WHEN %(vs)s = 'neznámá' THEN 'neznámá verze agenta; ' ELSE '' END || "
     "CASE WHEN COALESCE(d.last_inventory, '') <> '' AND COALESCE(d.agent_beat, '') >= datetime('now', '-30 minutes') "
     "AND d.last_inventory < datetime('now', '-__INVH__ hours') THEN 'stará inventura (agent žije); ' ELSE '' END || "
+    "CASE WHEN COALESCE(d.agent_error, '') <> '' AND %(trans)s AND %(beat)s AND d.agent_error_at >= datetime('now', '-2 hours') "
+    "THEN 'přechodná chyba spojení se serverem (agent se znovu spojil); ' ELSE '' END || "
+    "CASE WHEN json_extract(d.agent_info, '$.upd_state') = 'vraceno' "
+    "THEN 'aktualizace agenta na ' || COALESCE(json_extract(d.agent_info, '$.upd_target'), '?') || ' selhala (vráceno); ' ELSE '' END || "
     "CASE WHEN %(skew)s > 300 THEN 'odchylka hodin oproti serveru; ' ELSE '' END || "
     "CASE WHEN json_extract(d.agent_info, '$.elevated') = 0 THEN 'agent běží bez práv správce; ' ELSE '' END || "
     "CASE WHEN json_extract(d.agent_info, '$.usb_watch') = 0 THEN 'USB sledování neběží; ' ELSE '' END || "
@@ -106,13 +131,29 @@ _HEALTH_WARN = (
     "THEN 'neúplná data (' || json_extract(d.agent_info, '$.partial[0]') || '...); ' ELSE '' END || "
     "CASE WHEN COALESCE(d.mac, '') <> '' AND EXISTS (SELECT 1 FROM devices o WHERE o.id <> d.id AND o.mac = d.mac "
     "AND COALESCE(o.agent_version, '') <> '') THEN 'duplicitní MAC (klon?); ' ELSE '' END"
-    % {"vs": _VER_STATUS, "skew": _SKEW})
+    % {"vs": _VER_STATUS, "skew": _SKEW, "trans": _TRANS, "beat": _BEAT_OK})
 _HEALTH = ("CASE WHEN (%(bad)s) <> '' THEN 'chyba' WHEN (%(warn)s) <> '' THEN 'varování' "
            "WHEN %(has)s THEN 'v pořádku' ELSE '' END" % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT})
 _HEALTH_REASON = "rtrim((%s) || (%s), '; ')" % (_HEALTH_BAD, _HEALTH_WARN)
 # poradi: nejhorsi prvni
 _HEALTH_ORDER = ("CASE WHEN (%(bad)s) <> '' THEN 0 WHEN (%(warn)s) <> '' THEN 1 WHEN %(has)s THEN 2 ELSE 3 END"
                  % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT})
+
+# komunikace agenta: posledni kontakt = novejsi z heartbeatu a inventury; agent se hlasi nejmene kazdych 5 minut
+_LAST_CONTACT = "MAX(COALESCE(d.agent_beat, ''), COALESCE(d.last_inventory, ''))"
+_COMM = ("CASE WHEN %(lc)s = '' THEN CASE WHEN %(comp)s = 1 THEN 'nikdy' ELSE '' END "
+         "WHEN %(lc)s >= datetime('now', '-12 minutes') THEN 'komunikuje' ELSE 'mlčí' END"
+         % {"lc": _LAST_CONTACT, "comp": _IS_COMPUTER})
+_COMM_REASON = (
+    "CASE WHEN %(lc)s = '' THEN CASE WHEN %(comp)s <> 1 THEN '' WHEN d.online = 1 "
+    "THEN 'PC odpovídá na síti, ale agent se nikdy neozval: není nainstalovaný, nebo se instalace z GPO nespustila (skript z GPO běží jen při '"
+    "|| 'skutečném startu Windows – restartujte PC, nebo nasaďte naplánovanou úlohu)' "
+    "ELSE 'PC je vypnuté nebo mimo síť; agent se ozve po zapnutí, pokud je nainstalovaný' END "
+    "WHEN %(lc)s >= datetime('now', '-12 minutes') THEN '' "
+    "WHEN d.online = 1 THEN 'PC je zapnuté, ale agent mlčí od ' || %(lc)s || ' (UTC): agent neběží, nemá spojení se serverem nebo ho blokuje firewall' "
+    "ELSE 'PC je vypnuté, uspané nebo mimo síť; agent se ozve po zapnutí' END"
+    % {"lc": _LAST_CONTACT, "comp": _IS_COMPUTER})
+_NEXT_BEAT = "CASE WHEN COALESCE(d.agent_beat, '') <> '' THEN datetime(d.agent_beat, '+5 minutes') ELSE '' END"
 
 _GROUPS_TEXT = ("(SELECT GROUP_CONCAT(n, ', ') FROM (SELECT g.name AS n FROM device_group_members m "
                 "JOIN device_groups g ON g.id = m.group_id WHERE m.device_id = d.id ORDER BY g.name COLLATE NOCASE))")
@@ -190,6 +231,22 @@ ENTITIES = {
             "sec_secure_boot": ("Secure Boot", "json_extract(d.details, '$.security.secure_boot_text')", "text"),
             "sec_tpm": ("TPM", "json_extract(d.details, '$.security.tpm_text')", "text"),
             "sec_boot_mode": ("Režim zavádění", "json_extract(d.details, '$.security.boot_mode')", "text"),
+            "hotfix_age": ("Dnů od poslední aktualizace",
+                           "CASE WHEN COALESCE(json_extract(d.details, '$.security.last_hotfix'), '') <> '' "
+                           "THEN CAST(julianday('now') - julianday(json_extract(d.details, '$.security.last_hotfix')) AS INTEGER) END", "num"),
+            "os_eol": ("Podpora OS skončila",
+                       "CASE WHEN COALESCE(d.os_name, '') = '' THEN NULL "
+                       "WHEN d.os_name LIKE '%LTSC%' OR d.os_name LIKE '%LTSB%' OR d.os_name LIKE '%IoT%' THEN 0 "
+                       "WHEN d.os_name LIKE '%Windows XP%' OR d.os_name LIKE '%Vista%' OR d.os_name LIKE '%Windows 7%' "
+                       "OR d.os_name LIKE '%Windows 8%' OR d.os_name LIKE '%Windows 10%' "
+                       "OR d.os_name LIKE '%Server 2003%' OR d.os_name LIKE '%Server 2008%' OR d.os_name LIKE '%Server 2012%' THEN 1 "
+                       "WHEN d.os_name LIKE '%Windows%' THEN 0 END", "bool"),
+            "disk_type": ("Typ disku",
+                          "(SELECT GROUP_CONCAT(DISTINCT CASE WHEN COALESCE(json_extract(v.value, '$.type'), '') IN ('', 'Unspecified') "
+                          "THEN NULL ELSE json_extract(v.value, '$.type') END) FROM json_each(d.details, '$.disks') v)", "text"),
+            "net_kind": ("Typ sítě",
+                         "(SELECT GROUP_CONCAT(DISTINCT json_extract(v.value, '$.kind')) FROM json_each(d.details, '$.nics') v "
+                         "WHERE COALESCE(json_extract(v.value, '$.gateway'), '') <> '')", "text"),
             "sec_last_hotfix": ("Poslední aktualizace Windows", "json_extract(d.details, '$.security.last_hotfix')", "date"),
             "sec_pending_reboot": ("Čeká na restart", "json_extract(d.details, '$.security.pending_reboot_text')", "text"),
             "disk_health": ("Stav disků", "json_extract(d.details, '$.security.disk_health_text')", "text"),
@@ -214,6 +271,13 @@ ENTITIES = {
             "agent_error": ("Poslední chyba agenta", "d.agent_error", "text"),
             "agent_error_at": ("Čas poslední chyby agenta", "d.agent_error_at", "date"),
             "agent_beat": ("Poslední kontakt agenta", "d.agent_beat", "date"),
+            "agent_comm": ("Komunikace agenta", _COMM, "text"),
+            "agent_comm_reason": ("Diagnostika komunikace agenta", _COMM_REASON, "text"),
+            "agent_next_beat": ("Očekávaný další kontakt agenta", _NEXT_BEAT, "date"),
+            "agent_update": ("Stav aktualizace agenta",
+                             "CASE WHEN COALESCE(d.agent_version, '') = '' THEN '' "
+                             "WHEN json_extract(d.agent_info, '$.upd_state') = 'vraceno' THEN 'vráceno (' || COALESCE(json_extract(d.agent_info, '$.upd_target'), '?') || ')' "
+                             "WHEN " + _VER_STATUS + " = 'zastaralý' THEN 'čeká na aktualizaci' ELSE 'v pořádku' END", "text"),
             "agent_elevated": ("Agent s právy správce", "json_extract(d.agent_info, '$.elevated')", "bool"),
             "first_seen": ("Poprvé viděn", "d.first_seen", "date"),
             "last_seen": ("Naposledy viděn", "d.last_seen", "date"),
@@ -228,7 +292,8 @@ ENTITIES = {
                   "_vstat": _VER_STATUS, "_vtarget": _AGENT_TARGET, "_vpin": "COALESCE(d.agent_target, '')",
                   "_hreason": _HEALTH_REASON,
                   "_cur": "d.user_current", "_login": "d.last_login_at", "_groups": _GROUPS_JSON,
-                  "_ipc": _IP_CONFLICT_WITH, "_ipold": _IP_OLD_WITH},
+                  "_ipc": _IP_CONFLICT_WITH, "_ipold": _IP_OLD_WITH,
+                  "_beat": "d.agent_beat", "_comm": _COMM, "_commr": _COMM_REASON},
         "sort_expr": {"agent_state": _AGENT_STATE_ORDER, "ip": _ip_sort("d.ip"), "agent_health": _HEALTH_ORDER,
                       "agent_version": _ver_key("d.agent_version")},
     },
@@ -258,7 +323,16 @@ ENTITIES = {
             "publisher": ("Vydavatel", "x.publisher", "text"),
             "installs": ("Počet instalací", "x.installs", "num"),
             "versions": ("Různých verzí", "x.versions", "num"),
-            "latest": ("Nejvyšší verze", "x.latest", "text"),
+            "latest": ("Nejvyšší verze", "COALESCE(" + _sw_version("DESC") + ", x.latest)", "text"),
+            "pct": ("Podíl počítačů (%)",
+                    "ROUND(100.0 * x.installs / MAX(1, (SELECT COUNT(*) FROM devices WHERE COALESCE(last_inventory, '') <> '')), 1)", "num"),
+            "min_version": ("Nejnižší verze", _sw_version("ASC"), "text"),
+            "installs_30d": ("Instalací za 30 dní",
+                             "(SELECT COUNT(*) FROM sw_changes c WHERE c.name = x.name AND c.action = 'nainstalováno' "
+                             "AND c.ts >= datetime('now', '-30 days'))", "num"),
+            "licensed": ("Licencováno",
+                         "CASE WHEN EXISTS (SELECT 1 FROM licenses l WHERE l.match_pattern <> '' AND x.name LIKE l.match_pattern) "
+                         "THEN 1 ELSE 0 END", "bool"),
         },
         "default": ["name", "publisher", "installs", "versions", "latest"],
         "sort": ("installs", "desc"),
@@ -343,6 +417,13 @@ ENTITIES = {
             "free_gb": ("Volno (GB)", "ROUND(x.size_gb - x.used_gb, 2)", "num"),
             "delta_mb": ("Změna obsazení od připojení (MB)", "ROUND((x.used_gb - x.used_start_gb) * 1024, 1)", "num"),
             "encrypted": ("Šifrováno (BitLocker To Go)", "x.encrypted", "text"),
+            "pc_count": ("Na kolika PC použito",
+                         "CASE WHEN COALESCE(x.serial, '') = '' THEN NULL ELSE (SELECT COUNT(*) FROM ("
+                         "SELECT e.device_id FROM usb_events e WHERE e.serial = x.serial UNION "
+                         "SELECT c.device_id FROM usb_current c WHERE c.serial = x.serial)) END", "num"),
+            "connected_hours": ("Doba připojení (h)",
+                                "CASE WHEN COALESCE(x.connected_at, '') <> '' "
+                                "THEN ROUND((julianday('now') - julianday(x.connected_at)) * 24, 1) END", "num"),
         }, **_DEVICE_REF),
         "default": ["state", "name", "label", "size_gb", "used_gb", "encrypted", "serial", "hostname", "logged_user",
                     "connected_at", "source"],
@@ -403,6 +484,12 @@ ENTITIES = {
             "license_key": ("Licenční klíč", "x.license_key", "secret"),
             "match_pattern": ("Vzor názvu SW", "x.match_pattern", "text"),
             "note": ("Poznámka", "x.note", "text"),
+            "days_left": ("Dnů do vypršení",
+                          "CASE WHEN julianday(x.expires) IS NOT NULL THEN CAST(julianday(x.expires) - julianday('now') AS INTEGER) END", "num"),
+            "status": ("Stav",
+                       "CASE WHEN julianday(x.expires) IS NOT NULL AND julianday(x.expires) < julianday('now') THEN 'vypršela' "
+                       "WHEN julianday(x.expires) IS NOT NULL AND julianday(x.expires) < julianday('now') + 30 THEN 'vyprší do 30 dní' "
+                       "WHEN x.match_pattern <> '' AND x.seats > 0 AND " + _LIC_USED + " > x.seats THEN 'přečerpaná' ELSE 'platná' END", "text"),
         },
         "default": ["product", "vendor", "license_type", "seats", "used", "free", "expires", "assigned_to"],
         "sort": ("product", "asc"),

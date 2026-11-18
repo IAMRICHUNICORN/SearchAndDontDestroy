@@ -236,7 +236,7 @@ def store_agent_state(conn, dev_id, payload, ts):
     except ValueError:
         merged = {}
     if isinstance(info, dict):
-        for k in ("elevated", "usb_watch", "partial", "inv_ms", "clock", "ps", "usb_files"):
+        for k in ("elevated", "usb_watch", "partial", "inv_ms", "clock", "ps", "usb_files", "upd_state", "upd_target", "upd_at", "bad"):
             if k in info:
                 merged[k] = info[k] if isinstance(info[k], (bool, int, float)) else (
                     [s(x, 60) for x in info[k]][:20] if isinstance(info[k], list) else s(info[k], 80))

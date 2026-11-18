@@ -196,15 +196,62 @@ const AGENT_DOT = { 'odesílá': 'on', 'neaktivní': 'warn', 'nikdy': 'bad' };
 const VER_BADGE = { 'aktuální': 'ok', 'zastaralý': 'warn', 'neznámá': 'bad', 'novější': '' };
 const HEALTH_DOT = { 'v pořádku': 'on', 'varování': 'warn', 'chyba': 'bad' };
 
+const verGe = (v, min) => {
+  const a = String(v || '').split('.').map((x) => parseInt(x, 10) || 0);
+  const b = String(min).split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0); }
+  return true;
+};
+const AGENT_CMD_MIN = '2.1.0';
+
+async function sendAgentCmd(ids, cmd) {
+  const r = await api('POST', '/api/devices/agent-cmd', { cmd, device_ids: ids });
+  toast(r.changed ? 'Příkaz odeslán – agent ho dostane do 5 minut' : 'Příkaz nebylo komu zadat (PC nemá agenta)', r.changed ? 'ok' : 'error');
+  return r;
+}
+
+// okno s duvodem chyby/varovani agenta a akcemi (zkusit znovu / znovu spojit)
+function agentIssueDialog(row, health) {
+  const id = row._device_id || row._id;
+  const supports = verGe(row._agent, AGENT_CMD_MIN);
+  const reasons = String(row._hreason || '').split('; ').filter(Boolean);
+  const last = (row._beat && row._beat > (row._inv || '')) ? row._beat : row._inv;
+  const kv = (pairs) => el('dl', { class: 'kv' }, pairs.filter((p) => p[1] != null && p[1] !== '').map(([k, v]) => [el('dt', null, k), el('dd', null, v)]));
+  const body = el('div', null,
+    kv([['Počítač', row.hostname || row._host], ['Stav', el('span', null, el('span', { class: 'dot ' + (HEALTH_DOT[health] || '') }), health)],
+      ['Komunikace', row._comm], ['Poslední kontakt', last ? ago(last) + ' (' + fmtDate(last) + ')' : 'nikdy'],
+      ['Poslední inventura', row._inv ? ago(row._inv) + ' (' + fmtDate(row._inv) + ')' : 'nikdy'], ['Verze agenta', row._agent || 'bez agenta']]),
+    reasons.length ? el('h3', null, 'Důvod') : null,
+    reasons.length ? el('ul', null, reasons.map((r) => el('li', null, r))) : null,
+    row._commr ? el('div', { class: 'note-box info' }, row._commr) : null,
+    isAdmin() ? el('h3', null, 'Co můžete udělat') : null,
+    isAdmin() ? el('ul', null,
+      el('li', null, el('strong', null, 'Zkusit znovu'), ' – agent při nejbližším kontaktu (do 5 minut) hned pošle inventuru.'),
+      el('li', null, el('strong', null, 'Znovu spojit'), ' – navíc zapomene verze, které se nepovedlo nainstalovat, a zkusí aktualizaci znovu.')) : null,
+    isAdmin() && row._agent && !supports ? el('div', { class: 'note-box' }, 'Tento agent má verzi ' + row._agent + '. Příkazy fungují od agenta ' + AGENT_CMD_MIN
+      + ' – nejdřív ho aktualizujte (stránka Agent, nebo GPO naplánovaná úloha).') : null,
+    isAdmin() && !row._agent ? el('div', { class: 'note-box' }, 'PC nemá nainstalovaného agenta – příkazy nelze doručit. Nainstalujte ho (stránka Agent).') : null);
+  const buttons = [];
+  if (isAdmin() && row._agent && supports) {
+    buttons.push({ label: 'Zkusit znovu', onclick: async () => { await sendAgentCmd([id], 'retry'); } });
+    buttons.push({ label: 'Znovu spojit', primary: true, onclick: async () => { await sendAgentCmd([id], 'reconnect'); } });
+  }
+  buttons.push({ label: 'Detail počítače', onclick: () => { location.hash = '#/zarizeni/' + id; } });
+  buttons.push({ label: 'Zavřít' });
+  modal('Stav agenta', body, buttons);
+}
+
 function cell(col, row) {
   const v = row[col.key];
   if (col.key === 'agent_state') {
     const td = el('td', { class: 'nw' });
     if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
-    td.title = T((v === 'nikdy' ? 'Agent zatím neposlal žádná data' : 'Poslední data: ' + fmtDate(row._inv)) +
-      (row._agent ? ' · agent ' + row._agent : ''));
-    return add(td, [el('span', { class: 'dot ' + AGENT_DOT[v] }), v === 'nikdy' ? 'nikdy' : ago(row._inv),
-      row._agent ? el('div', { class: 'small muted' }, 'agent ' + row._agent) : null]);
+    const last = (row._beat && row._beat > (row._inv || '')) ? row._beat : row._inv;
+    td.title = T((v === 'nikdy' ? 'Agent zatím neposlal žádná data' : 'Poslední kontakt: ' + fmtDate(last) + ' · poslední inventura: ' + fmtDate(row._inv)) +
+      (row._agent ? ' · agent ' + row._agent : '') + (row._commr ? ' · ' + row._commr : ''));
+    return add(td, [el('span', { class: 'dot ' + AGENT_DOT[v] }), v === 'nikdy' ? 'nikdy' : (row._beat ? ['kontakt', ' ', ago(last)] : ago(row._inv)),
+      el('div', { class: 'small muted' }, v === 'nikdy' ? null : ['inventura', ' ', ago(row._inv)], v !== 'nikdy' && row._agent ? ' · ' : null,
+        row._agent ? 'agent ' + row._agent : null)]);
   }
   if (col.key === 'agent_version') {
     const td = el('td', { class: 'nw' });
@@ -217,7 +264,11 @@ function cell(col, row) {
   if (col.key === 'agent_health') {
     const td = el('td', { class: 'nw' });
     if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
-    td.title = T(row._hreason || 'Bez výhrad');
+    td.title = T((row._hreason || 'Bez výhrad') + (v !== 'v pořádku' ? ' · klikněte pro podrobnosti' : ''));
+    if (v !== 'v pořádku') {
+      td.classList.add('clickable');
+      td.addEventListener('click', (e) => { e.stopPropagation(); agentIssueDialog(row, v); });
+    }
     return add(td, [el('span', { class: 'dot ' + (HEALTH_DOT[v] || '') }), v]);
   }
   if (col.key === 'groups') {
@@ -1085,7 +1136,16 @@ async function agentTab(box, d, id) {
       ['Verze agenta', d.agent_version], ['Stav verze', el('span', { class: 'badge ' + (VER_BADGE[st.agent_ver_status] || '') }, st.agent_ver_status || '–')],
       ['Cílová verze', st.agent_target_eff], ['Připnuto k tomuto PC', d.agent_target || 'ne – podle globálního cíle'],
       ['Zdraví', el('span', null, el('span', { class: 'dot ' + (HEALTH_DOT[st.agent_health] || '') }), st.agent_health || '–')],
-      ['Důvod', st.agent_health_reason], ['Poslední kontakt agenta', fmtDate(d.agent_beat)], ['Poslední inventura', fmtDate(d.last_inventory)]]),
+      ['Důvod', st.agent_health_reason], ['Komunikace', st.agent_comm], ['Diagnostika komunikace', st.agent_comm_reason],
+      ['Poslední kontakt agenta', d.agent_beat ? ago(d.agent_beat) + ' (' + fmtDate(d.agent_beat) + ')' : ''],
+      ['Očekávaný další kontakt', fmtDate(st.agent_next_beat)], ['Poslední inventura', fmtDate(d.last_inventory)],
+      ['Stav aktualizace', info.upd_state ? ({ ok: 'proběhla', stahuje: 'probíhá', vraceno: 'selhala, vráceno' }[info.upd_state] || info.upd_state)
+        + (info.upd_target ? ' (' + info.upd_target + ')' : '') + (info.upd_at ? ' · ' + fmtDate(info.upd_at) : '') : ''],
+      ['Zapamatované vadné verze', (info.bad || []).join(', ')]]),
+      isAdmin() && d.agent_version ? el('div', { class: 'row', style: 'margin-top:10px' },
+        el('button', { disabled: !verGe(d.agent_version, AGENT_CMD_MIN), onclick: () => sendAgentCmd([Number(id)], 'retry').catch(fail) }, 'Zkusit znovu'),
+        el('button', { disabled: !verGe(d.agent_version, AGENT_CMD_MIN), onclick: () => sendAgentCmd([Number(id)], 'reconnect').catch(fail) }, 'Znovu spojit'),
+        verGe(d.agent_version, AGENT_CMD_MIN) ? null : el('span', { class: 'hint' }, 'Příkazy fungují od agenta ' + AGENT_CMD_MIN)) : null,
       el('h3', { style: 'margin-top:18px' }, 'Nastavit verzi pro tento počítač'),
       el('div', { class: 'row' }, sel, el('button', { class: 'primary', onclick: async () => {
         try {
@@ -1477,6 +1537,25 @@ PAGES.skenovani = async (main) => {
   S.live = (ev) => { if (ev.type === 'job') route(); };
 };
 
+// kontrola spojeni agentu se serverem (adresa, port, HTTPS, certifikat)
+function connectionCard(c) {
+  if (!c) return null;
+  const cert = c.cert || {};
+  const kv = (pairs) => el('dl', { class: 'kv' }, pairs.filter((p) => p[1] != null && p[1] !== '').map(([k, v]) => [el('dt', null, k), el('dd', null, v)]));
+  return el('div', { class: 'card' }, el('h2', null, 'Spojení agentů se serverem'),
+    kv([['Adresa pro agenty', (c.scheme || '') + '://' + (c.host || '')], ['Port', c.port], ['HTTPS', c.https ? 'ano' : 'ne'],
+      ['Otisk certifikátu (SHA-1)', c.thumbprint], ['Certifikát platí do', cert.not_after ? cert.not_after + (cert.days_left != null ? ' (zbývá ' + cert.days_left + ' dní)' : '') : ''],
+      ['Jména v certifikátu', (cert.names || []).join(', ')]]),
+    ...(c.warnings || []).map((w) => el('div', { class: 'note-box' }, w)),
+    (c.warnings || []).length ? null : el('div', { class: 'hint' }, 'Bez výhrad.'),
+    c.thumb_changed && isAdmin() ? el('div', { class: 'row' }, el('button', { onclick: async () => {
+      if (!(await confirmBox('Potvrdit aktuální otisk certifikátu jako známý? Agenti s původním otiskem se nepřipojí, dokud se neaktualizují.', 'Potvrdit'))) return;
+      await api('POST', '/api/agent-info/confirm-thumb'); route();
+    } }, 'Potvrdit nový otisk')) : null,
+    el('div', { class: 'hint' }, 'Certifikát je uložen ve složce /data/tls. Zálohujte ji spolu s databází – po jejím ztrátě se vytvoří nový certifikát a existující agenti se přestanou připojovat. ',
+      'Po změně tokenu, adresy nebo certifikátu aktualizujte příkaz v GPO.'));
+}
+
 PAGES.agent = async (main, parts, params) => {
   const wantVer = (params && params.get('verze')) || '';
   const a = await api('GET', '/api/agent-info' + (wantVer ? '?version=' + encodeURIComponent(wantVer) : ''));
@@ -1496,6 +1575,7 @@ PAGES.agent = async (main, parts, params) => {
   main.append(...[
     a.target !== a.latest ? el('div', { class: 'note-box' }, 'Cílová verze agentů je ', el('strong', null, a.target), ', nejnovější verze je ', el('strong', null, a.latest),
       '. Agenti zůstávají na cílové verzi, dokud v ', el('a', { href: '#/nastaveni' }, 'Nastavení'), ' nepřepnete na „Nejnovější". Novou verzi můžete nejdřív vyzkoušet na jednom PC: vyberte ji níže a použijte příkaz Test nebo Trvalá instalace; pak ji v detailu PC (záložka Agent) připněte.') : null,
+    connectionCard(a.check),
     el('div', { class: 'row', style: 'margin-bottom:10px' }, el('span', null, 'Verze agenta v příkazech níže:'), verSel),
     a.server_url_set ? null : el('div', { class: 'note-box' }, 'V ', el('a', { href: '#/nastaveni' }, 'Nastavení'),
       ' není vyplněna adresa serveru. Příkazy níže používají adresu, ze které máte právě otevřený prohlížeč (', a.server_url,

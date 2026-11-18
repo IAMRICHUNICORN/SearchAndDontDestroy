@@ -2,6 +2,19 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.8.0
+- **Agent 2.1.0:** příkazy ze serveru (*Zkusit znovu*, *Znovu spojit*) a hlášení stavu aktualizace (probíhá / proběhla / vráceno). Nasazuje se stejně jako 2.0.0:
+  **Pozor:** při cíli „Nejnovější" se agenti 2.0.0 přepnou na 2.1.0 do 5 minut od aktualizace serveru. Chcete-li novou verzi nejdřív vyzkoušet, nastavte před aktualizací
+  v *Nastavení → Agent: verze a aktualizace* cíl 2.0.0 a 2.1.0 připněte jednomu PC.
+- **Klikatelná chyba agenta:** okno s důvodem, poslední komunikací a tlačítky *Zkusit znovu* / *Znovu spojit* (schéma databáze 7, sloupec `agent_cmd`).
+- **Stav agenta ukazuje poslední komunikaci** (kontakt) a zvlášť poslední inventuru; nové sloupce *Komunikace agenta*, *Diagnostika komunikace agenta*,
+  *Očekávaný další kontakt agenta*, *Stav aktualizace agenta* (proč PC mlčí: vypnuto / agent neběží / nikdy nenainstalován, nutný restart pro GPO).
+- **Přechodné chyby spojení** se serverem nebarví zdraví agenta na červeno, pokud se agent znovu spojil.
+- **Karta „Spojení agentů se serverem"** na stránce Agent: adresa, port, HTTPS, otisk a platnost certifikátu, varování o změně otisku a zálohování `/data/tls`.
+- **Nové sloupce:** Software – souhrn (Podíl počítačů, Nejnižší verze, Instalací za 30 dní, Licencováno; *Nejvyšší verze* se nově počítá číselně); Zařízení (Dnů od poslední
+  aktualizace, Podpora OS skončila, Typ disku, Typ sítě); USB – právě připojená (Na kolika PC použito, Doba připojení); Licence (Dnů do vypršení, Stav).
+  *Podpora OS skončila* nezohledňuje placené rozšířené aktualizace (ESU).
+
 ## 1.7.1
 - **Oprava:** v Nastavení → Agent se pod tabulkou verzí zobrazoval text „null".
 - **Konflikt IP:** hlásí se jen tehdy, když jsou oba záznamy se stejnou IP online a mají různou MAC. Starší offline záznam (např. po výměně serveru) má

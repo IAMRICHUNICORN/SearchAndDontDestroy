@@ -565,12 +565,12 @@ def device_detail(device_id: int, view: Optional[int] = None, user=Depends(activ
         except ValueError:
             device["agent_info"] = {}
         if user["role"] == "admin":
-            _m, srows, _t = entities.run_query(conn, "devices", ["agent_ver_status", "agent_target_eff", "agent_health",
-                                                                 "agent_health_reason"], only_device=device_id, limit=1)
-            device["agent_status"] = ({k: srows[0][k] for k in ("agent_ver_status", "agent_target_eff", "agent_health",
-                                                                "agent_health_reason")} if srows else None)
+            keys = ("agent_ver_status", "agent_target_eff", "agent_health", "agent_health_reason", "agent_comm",
+                    "agent_comm_reason", "agent_next_beat")
+            _m, srows, _t = entities.run_query(conn, "devices", list(keys), only_device=device_id, limit=1)
+            device["agent_status"] = ({k: srows[0][k] for k in keys} if srows else None)
         else:
-            for k in ("agent_info", "agent_error", "agent_error_at", "agent_target", "agent_beat"):
+            for k in ("agent_info", "agent_error", "agent_error_at", "agent_target", "agent_beat", "agent_cmd"):
                 device.pop(k, None)
         device["monitors"] = q("SELECT * FROM monitors WHERE device_id = ? ORDER BY connected DESC, model")
         device["software"] = q("SELECT name, version, publisher, install_date FROM software WHERE device_id = ? "
@@ -971,6 +971,9 @@ def _check_agent(request: Request):
         raise HTTPException(413, "Příliš velká data")
 
 
+AGENT_CMDS = ("retry", "reconnect")
+
+
 def _agent_reply(conn, request=None, hostname="", reported_version=""):
     """Odpoved agentovi: interval inventury, cilova verze (podle PC, jinak globalni), SHA-256 cile a povoleni sledovani souboru USB.
     Starsi agenti (pred 2.0.0) znaji jen agent_version = globalni cil a stahuji soubor bez udani verze."""
@@ -985,6 +988,11 @@ def _agent_reply(conn, request=None, hostname="", reported_version=""):
              "inventory_hours": int(cfg["agent_inventory_hours"] or 6),
              "target_version": target, "target_gen": int(cfg.get("agent_target_gen") or 1),
              "usb_files": cfg.get("usb_files_enabled") == "1"}
+    if hostname and not agentrel.is_legacy(reported_version):
+        row = conn.execute("SELECT id, agent_cmd FROM devices WHERE hostname = ? ORDER BY id LIMIT 1", (hostname,)).fetchone()
+        if row and row["agent_cmd"] in AGENT_CMDS:
+            reply["cmd"] = row["agent_cmd"]
+            conn.execute("UPDATE devices SET agent_cmd = '' WHERE id = ?", (row["id"],))
     if request is not None and not agentrel.is_legacy(reported_version):
         base = _base_url(request, cfg)
         try:
@@ -1127,6 +1135,69 @@ def devices_agent_version(body: dict = Body(...), user=Depends(admin_user)):
     return {"ok": True, "changed": changed, "selected": len(ids)}
 
 
+@app.post("/api/devices/agent-cmd")
+def devices_agent_cmd(body: dict = Body(...), user=Depends(admin_user)):
+    """Zada agentovi prikaz, ktery dostane pri nejblizsim kontaktu (do 5 minut):
+    retry = ihned poslat inventuru, reconnect = zapomenout vadne verze, poslat inventuru a znovu zkusit aktualizaci.
+    Prikaz funguje jen u agentu od verze 2.1.0 (starsi ho ignoruji)."""
+    cmd = str(body.get("cmd") or "")
+    if cmd not in AGENT_CMDS and cmd != "":
+        raise HTTPException(400, "Neznámý příkaz")
+    with db.db() as conn:
+        ids = _selected_ids(conn, body)
+        changed = 0
+        for device_id in ids:
+            changed += conn.execute("UPDATE devices SET agent_cmd = ? WHERE id = ? AND COALESCE(agent_version, '') <> ''",
+                                    (cmd, device_id)).rowcount
+    return {"ok": True, "changed": changed, "selected": len(ids)}
+
+
+def _connection_check(request, cfg, base, pin):
+    """Kontrola spojeni agentu se serverem: adresa, port, HTTPS, certifikat a varovani."""
+    m = re.match(r"^(https?)://([^/:]+|\[[^\]]+\])(?::(\d+))?", base)
+    scheme, host, port = (m.group(1), m.group(2), m.group(3)) if m else ("", "", "")
+    if not port and scheme:
+        port = "443" if scheme == "https" else "80"
+    info = tls.cert_info()
+    warn = []
+    if not cfg.get("server_url"):
+        warn.append("Adresa serveru není vyplněna v Nastavení – agenti dostanou adresu, ze které máte otevřený prohlížeč.")
+    else:
+        try:
+            browser = str(request.base_url).rstrip("/")
+            bm = re.match(r"^https?://([^/:]+|\[[^\]]+\])", browser)
+            if bm and host and bm.group(1).lower() != host.lower():
+                warn.append("Adresa pro agenty (%s) se liší od adresy, na které máte otevřenou aplikaci (%s). Ověřte, že je správná ze všech počítačů." % (host, bm.group(1)))
+        except Exception:
+            pass
+    if scheme == "http":
+        warn.append("Adresa pro agenty používá http:// – komunikace není šifrovaná.")
+    if info:
+        left = info.get("days_left")
+        if isinstance(left, int) and left < 60:
+            warn.append("Certifikát serveru brzy vyprší (zbývá %d dní)." % left)
+        if host and info.get("names") and host.lower() not in [n.lower() for n in info["names"]]:
+            warn.append("IP adresa %s není v seznamu jmen certifikátu (agenti ověřují otisk, takže to funguje; prohlížeč ale zobrazí varování)." % host)
+    known = cfg.get("cert_thumb_known") or ""
+    changed = bool(pin and known and known != pin)
+    if changed:
+        warn.append("Otisk certifikátu se změnil oproti poslednímu známému (%s). Agenti s původním otiskem se nepřipojí, dokud se neaktualizují." % known)
+    if pin and not known:
+        with db.db() as conn:
+            db.set_setting(conn, "cert_thumb_known", pin)
+    return {"scheme": scheme, "host": host, "port": port, "https": scheme == "https", "tls": tls.enabled(),
+            "thumbprint": pin, "cert": info, "warnings": warn, "thumb_changed": changed}
+
+
+@app.post("/api/agent-info/confirm-thumb")
+def agent_confirm_thumb(user=Depends(admin_user)):
+    """Potvrdi aktualni otisk certifikatu jako zname (zmizi varovani o zmene)."""
+    pin = tls.thumbprint()
+    with db.db() as conn:
+        db.set_setting(conn, "cert_thumb_known", pin)
+    return {"ok": True, "thumbprint": pin}
+
+
 @app.get("/api/agent-info")
 def agent_info(request: Request, version: str = "", user=Depends(admin_user)):
     """Prikazy pro instalaci/test agenta. version: verze, kterou prikazy stahnou (jinak globalni cil)."""
@@ -1141,7 +1212,8 @@ def agent_info(request: Request, version: str = "", user=Depends(admin_user)):
     def one(mode):
         return 'powershell -NoProfile -ExecutionPolicy Bypass -Command "%s"' % tls.bootstrap_ps(url + mode + suffix, pin)
 
-    return {"server_url": base, "server_url_set": bool(cfg.get("server_url")), "token": token, "agents": agents,
+    check = _connection_check(request, cfg, base, pin)
+    return {"check": check, "server_url": base, "server_url_set": bool(cfg.get("server_url")), "token": token, "agents": agents,
             "install": one("install"), "once": one("once"), "test": one("test"), "uninstall": one("uninstall"),
             "download": url + "watch" + suffix, "tls": tls.enabled(), "cert_thumbprint": pin,
             "latest": agentrel.current_version(), "target": agentrel.global_target(cfg),

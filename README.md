@@ -53,8 +53,8 @@ docker compose up -d --build
 
 ```bash
 ./scripts/build-image.sh amd64        # nebo arm64 podle procesoru QNAPu
-# vznikne dist/hwsw-monitor-1.7.1-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
-docker load -i hwsw-monitor-1.7.1-amd64.tar
+# vznikne dist/hwsw-monitor-1.8.0-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
+docker load -i hwsw-monitor-1.8.0-amd64.tar
 docker compose up -d --no-build
 ```
 
@@ -93,7 +93,7 @@ Složka `data/tls/` není součástí kompletní zálohy stahované z webu; zál
 
 ```bash
 ./scripts/update.sh                                   # sestaví novou verzi ze zdrojů
-./scripts/update.sh hwsw-monitor-1.7.1-amd64.tar      # nebo nahraje hotový image
+./scripts/update.sh hwsw-monitor-1.8.0-amd64.tar      # nebo nahraje hotový image
 ```
 
 Co se děje s databází:
@@ -109,10 +109,13 @@ Při vývoji další verze: zvyšte číslo v `app/VERSION` a změny tabulek př
 
 ## Agent: verze, aktualizace a návrat
 
-- Agent má **vlastní číslo verze** nezávislé na aplikaci (`app/agent/AGENT_VERSION`, nyní 2.0.0). Mění se jen tehdy, když se změní agent.
+- Agent má **vlastní číslo verze** nezávislé na aplikaci (`app/agent/AGENT_VERSION`, nyní 2.1.0). Mění se jen tehdy, když se změní agent.
 - Agenti se **udržují aktuální sami**: při každém spojení se serverem (nejpozději do 5 minut) zjistí svou cílovou verzi. Když se liší od jejich, stáhnou ji, ověří SHA-256, zálohují předchozí soubor a přepnou se – bez restartu počítače.
 - **Pojistka:** pokud se nová verze do 2 minut neohlásí, původní proces vrátí předchozí soubor, zapamatuje si „vadnou verzi" a běží dál. Vadnou verzi už nezkouší, dokud administrátor nezmění cíl.
 - **Návrat na starší verzi:** *Nastavení → Agent: verze a aktualizace*. Výběr konkrétní verze = návrat a zároveň zamknutí (nové verze se nerozesílají, dokud nevrátíte „Nejnovější"). U jednoho PC jde verzi připnout v detailu zařízení (záložka Agent) nebo hromadně v seznamu Zařízení (*Verze agenta*). Připnutí k jednomu PC funguje jen pro agenty od 2.0.0; starší agent (1.x) následuje globální cíl.
+- **Příkazy agentovi (od agenta 2.1.0):** klik na *chyba* / *varování* ve sloupci *Zdraví agenta* otevře okno s důvodem. *Zkusit znovu* donutí agenta poslat inventuru při nejbližším kontaktu (do 5 minut), *Znovu spojit* navíc zapomene vadné verze a zkusí aktualizaci znovu. Příkaz se doručí v odpovědi serveru na další hlášení agenta.
+- **Komunikace:** sloupce *Komunikace agenta*, *Diagnostika komunikace agenta* a *Stav aktualizace agenta* ukazují, kdy se agent naposledy ozval (heartbeat do 5 minut), jestli komunikuje, a proč ne. Jednorázové chyby spojení se serverem jsou „přechodné" a zdraví nebarví na červeno, pokud se agent znovu spojil.
+- Stránka *Agent pro Windows* má kartu **Spojení agentů se serverem**: adresa, port, HTTPS, otisk a platnost certifikátu a varování (změna otisku, brzké vypršení, adresa liší od adresy prohlížeče).
 - Agent zapisuje **místní log** (`C:\ProgramData\HWSW-Agent\agent.log`, rotace po 512 KB) a chyby hlásí serveru (sekce *Agent – problémy*, sloupec *Zdraví agenta*).
 
 **Vydání nové verze agenta (postup pro vývoj):**
@@ -154,7 +157,7 @@ Všechny zálohy se dělají za běhu přes SQLite backup API (konzistentní sn�
 - Hesla uživatelů: PBKDF2-SHA256. Hesla k AD/WinRM: šifrovaná klíčem v datovém svazku.
 - Agenti se prokazují tokenem. Token je v instalačním příkazu – kdo ho zná, může posílat data. Na počítačích je skript čitelný jen pro SYSTEM a správce. Token lze kdykoli vyměnit (Agent → *Vygenerovat nový token*).
 - Spojení prohlížeče i agentů je šifrované (HTTPS); agent ověřuje certifikát serveru podle otisku.
-- Agent běží pod účtem SYSTEM. Automatická aktualizace agentů je proto ve výchozím stavu **vypnutá**.
+- Agent běží pod účtem SYSTEM. Aktualizace agentů je trvale zapnutá (ověření SHA-256, automatický návrat); cílovou verzi řídí administrátor v Nastavení.
 - Licenční klíče vidí celé jen administrátor.
 
 ## Vyzkoušení bez Dockeru a bez Windows

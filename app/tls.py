@@ -127,3 +127,28 @@ def bootstrap_ps(script_url, pin=""):
                      "[char]36+'args[3] -eq 0 -or '+[char]36+'args[1].GetCertHashString() -eq ''%s''')" % pin)
     parts.append("iex ((New-Object Net.WebClient).DownloadString('%s'))" % script_url)
     return "; ".join(parts)
+
+
+def cert_info():
+    """Udaje o certifikatu pro kontrolu: platnost (UTC), zbyvajici dny, jmena (DNS/IP) a SHA-1 otisk. Prazdne, kdyz HTTPS nebezi."""
+    if not enabled() or not os.path.isfile(CERT_PATH):
+        return {}
+    try:
+        from cryptography import x509
+        cert = x509.load_der_x509_certificate(_der())
+        end = getattr(cert, "not_valid_after_utc", None)
+        if end is not None:
+            end = end.replace(tzinfo=None)
+        else:
+            end = cert.not_valid_after
+        names = []
+        try:
+            ext = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+            names = [str(n.value) for n in ext]
+        except Exception:
+            pass
+        left = (end - datetime.datetime.utcnow()).days
+        return {"not_after": end.strftime("%Y-%m-%d"), "days_left": left, "names": names,
+                "thumbprint": thumbprint(), "path": CERT_PATH}
+    except Exception:
+        return {"thumbprint": thumbprint(), "path": CERT_PATH}

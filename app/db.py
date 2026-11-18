@@ -302,6 +302,10 @@ MIGRATIONS = [
         "INSERT OR IGNORE INTO settings(key, value) SELECT 'agent_target_version', '1.6.0' "
         "WHERE EXISTS (SELECT 1 FROM devices WHERE COALESCE(agent_version, '') <> '')",
     ],
+    [
+        # verze 1.8.0: prikaz pro agenta (zkusit znovu / znovu spojit), doruci se pri nejblizsim kontaktu agenta
+        "ALTER TABLE devices ADD COLUMN agent_cmd TEXT DEFAULT ''",
+    ],
 ]
 
 
@@ -611,6 +615,7 @@ def _crypto():
 
 DEFAULT_SETTINGS = {
     "server_url": "",
+    "cert_thumb_known": "",
     "ad_enabled": "0",
     "ad_server": "",
     "ad_use_ssl": "0",

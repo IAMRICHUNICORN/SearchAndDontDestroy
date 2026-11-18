@@ -25,6 +25,7 @@ $script:Partial = @()
 $script:UsbWatch = $false
 $script:FilesEnabled = $false
 $script:InvMs = 0
+$script:ForceInv = $false
 $script:Watchers = @{}
 $script:FileBuf = @{}
 $ErrorActionPreference = 'Continue'
@@ -106,6 +107,7 @@ function Set-AgentError([string]$Where, $Err) {
 }
 
 function Get-AgentInfo {
+    $st = Read-State
     return @{
         elevated = (Test-Elevated)
         usb_watch = [bool]$script:UsbWatch
@@ -114,16 +116,23 @@ function Get-AgentInfo {
         inv_ms = [int]$script:InvMs
         clock = ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))
         ps = [string]$PSVersionTable.PSVersion
+        upd_state = [string]$st.upd_state
+        upd_target = [string]$st.upd_target
+        upd_at = [string]$st.upd_at
+        bad = @($st.bad)
     }
 }
 
 function Read-State {
-    $st = @{ gen = 0; bad = @() }
+    $st = @{ gen = 0; bad = @(); upd_state = ''; upd_target = ''; upd_at = '' }
     try {
         if (Test-Path $StatePath) {
             $o = Get-Content -Path $StatePath -Raw | ConvertFrom-Json
             $st.gen = [int]$o.gen
             $st.bad = @($o.bad | Where-Object { $_ })
+            if ($o.upd_state) { $st.upd_state = [string]$o.upd_state }
+            if ($o.upd_target) { $st.upd_target = [string]$o.upd_target }
+            if ($o.upd_at) { $st.upd_at = [string]$o.upd_at }
         }
     } catch {}
     return $st
@@ -132,10 +141,19 @@ function Read-State {
 function Write-State($St) {
     try {
         if (Test-Path $InstallDir) {
-            $json = (@{ gen = [int]$St.gen; bad = @($St.bad) } | ConvertTo-Json -Compress)
+            $json = (@{ gen = [int]$St.gen; bad = @($St.bad); upd_state = [string]$St.upd_state; upd_target = [string]$St.upd_target; upd_at = [string]$St.upd_at } | ConvertTo-Json -Compress)
             [IO.File]::WriteAllText($StatePath, $json)
         }
     } catch {}
+}
+
+function Set-UpdateState([string]$State, [string]$Target) {
+    # stav posledni aktualizace (stahuje / ok / vraceno) se uklada do state.json a hlasi serveru
+    $st = Read-State
+    $st.upd_state = $State
+    $st.upd_target = $Target
+    $st.upd_at = ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))
+    Write-State $st
 }
 
 function Wmi([string]$Class, [string]$Filter = '', [string]$Namespace = 'root\cimv2') {
@@ -923,12 +941,14 @@ function Invoke-AgentUpdate($Reply, $Mutex) {
     $tmp = $null
     try {
         Write-AgentLog ('aktualizace na verzi ' + $target + ' - stahuji')
+        Set-UpdateState 'stahuje' $target
         $tmp = Save-AgentFile $target $sha
         Copy-Item -Path $ScriptPath -Destination $prev -Force
         Remove-Item $StartedPath -Force -ErrorAction SilentlyContinue
         Move-Item -Path $tmp -Destination $ScriptPath -Force
     } catch {
         Set-AgentError ('aktualizace na ' + $target) $_
+        Set-UpdateState 'vraceno' $target
         if ($tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
         return
     }
@@ -958,6 +978,9 @@ function Invoke-AgentUpdate($Reply, $Mutex) {
     try { Copy-Item -Path $prev -Destination $ScriptPath -Force } catch {}
     $st = Read-State
     $st.bad = @($st.bad) + $target
+    $st.upd_state = 'vraceno'
+    $st.upd_target = $target
+    $st.upd_at = ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))
     Write-State $st
     try { Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $arg } catch {}
     exit 0
@@ -1041,6 +1064,19 @@ function Read-Reply($Reply) {
     # zapamatuje si nastaveni ze serveru (interval inventury, sledovani souboru USB)
     try { if ($Reply.inventory_hours) { $script:InventoryHours = [int]$Reply.inventory_hours } } catch {}
     try { $script:FilesEnabled = [bool]$Reply.usb_files } catch {}
+    $cmd = ''
+    try { $cmd = [string]$Reply.cmd } catch {}
+    if ($cmd -eq 'retry') {
+        Write-AgentLog 'prikaz ze serveru: zkusit znovu (inventura ihned)'
+        $script:ForceInv = $true
+    } elseif ($cmd -eq 'reconnect') {
+        Write-AgentLog 'prikaz ze serveru: znovu spojit (vadne verze zapomenuty, inventura ihned, nova aktualizace)'
+        $st = Read-State
+        $st.bad = @()
+        $st.upd_state = ''
+        Write-State $st
+        $script:ForceInv = $true
+    }
 }
 
 function Watch-Loop {
@@ -1051,6 +1087,10 @@ function Watch-Loop {
     # potvrzeni startu pro dohled pri aktualizaci (soubor started.txt s cislem verze)
     try { if (Test-Path $InstallDir) { [IO.File]::WriteAllText($StartedPath, $AgentVersion) } } catch {}
     Write-AgentLog 'agent spusten'
+    try {
+        $stNow = Read-State
+        if ($stNow.upd_state -eq 'stahuje' -and $stNow.upd_target -eq $AgentVersion) { Set-UpdateState 'ok' $AgentVersion }
+    } catch {}
 
     $usbSig = $null
     $script:InventoryHours = 6
@@ -1066,7 +1106,8 @@ function Watch-Loop {
 
     while ($true) {
         $now = Get-Date
-        if (($now - $lastInventory).TotalHours -ge $script:InventoryHours) {
+        if ($script:ForceInv -or (($now - $lastInventory).TotalHours -ge $script:InventoryHours)) {
+            $script:ForceInv = $false
             try {
                 $result = Send-Inventory
                 $usbSig = $result.usb
