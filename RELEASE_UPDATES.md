@@ -5,9 +5,37 @@ Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CH
 
 ## Cekaji na dalsi vydani
 
-(zatim nic; navrh do budoucna: Datum nakupu / zaruka - rucni pole, vyzaduje migraci; odlozene sloupce z polozky 6; upozorneni "po zmene tokenu aktualizujte GPO" je jiz v kartě Spojeni)
+(zatim nic)
 
-## Hotovo ve verzi 1.8.0 (implementovano a otestovano lokalne, necommitnuto; agent 2.1.0)
+## Hotovo (vydano) ve verzi 1.9.0 (agent 2.2.0)
+1. USB - prepracovat detekci (navrh k odsouhlaseni): hlasit jen skutecne uloziste s medii a telefony/prenosna zarizeni (MTP/PTP/Apple/ADB),
+   okamzite varovani (trvale upozorneni v aplikaci, ne jen mizici toast); prazdna ctecka/dock/kabel bez uloziste se nehlasi jako uloziste;
+   povolene zarizeni (mys, klavesnice, dongle, Bluetooth, audio, kamera, tiskarna, hub) se nehlasi. Agent 2.2.0.
+2. Zarizeni: filtr ONLINE / OFFLINE (rychla volba ve filtrech a v zalozkach seznamu) a u offline zarizeni udaj, jak dlouho je offline
+   (od posledniho online, napr. "offline 3 h 20 min" / "offline 5 dni"); novy sloupec "Offline od / delka offline", razeni podle delky.
+   Zakladem je existujici sloupec Online a cas posledniho videni (last_seen); online = videno v limitu "Povazovat za offline po (min)".
+3. Stav agenta - prisnejsi pravidla pro "chyba" (navrh k odsouhlaseni):
+   - CHYBA az kdyz problem trva nepretrzite/opakovane vic nez 3 dny (nastavitelne v Nastaveni, vychozi 3 dny).
+   - Kratsi problem (chyba agenta mladsi nez 3 dny; agent se nespojil, ale PC je online) = VAROVANI, ne chyba.
+   - Duvody se uchovavaji (historie chyb u zarizeni: text, prvni a posledni vyskyt, pocet opakovani, uchovani dle "agent_problems_days")
+     a jsou k videni po rozkliknuti stavu agenta, i kdyz se agent mezitim opravil.
+   Tabulka agent_error_log (schema 8) + upravene zdravi v entities.py + okno chyby v app.js.
+   ODSOUHLASENO: "opakovane po 3 dnech" = chyba se objevuje aspon 1x denne po 3 dny, nebo se agent 3 dny neozval i kdyz je PC online.
+   PC, kde se agent nikdy neozval, NENI "chyba" ale ma vlastni stav "BEZ AGENTA" (NO AGENT) - u nich se nehlasi chyba ani varovani.
+4. USB - prenos dat (navrh k odsouhlaseni): u kazdeho pripojeni zapsat nazev USB, uzivatele (kdo ho pripojil) a soubory
+   NA USB (zapis, prejmenovani) i Z USB (cteni/kopirovani na PC): nazev, cesta, velikost, cas, uzivatel, program. Zdroj "Z USB":
+   audit vymennych medii z Windows (udalost 4663, zapina GPO "Audit Removable Storage"), agent ji cte ze Security logu.
+   Sledovani souboru je dnes vychozi VYPNUTE (Nastaveni) a hlasi jen zapis NA USB - proto se nic nezaznamenava.
+   Souhrn u pripojeni: pocet souboru a MB tam / zpet; zalozka "Soubory na USB" se smerem (na USB / z USB).
+   ODSOUHLASENO + doplneno: (a) uzivatel ma sledovani souboru zapnute, ale nic se nezapisuje -> opravit zjisteni pismena USB
+   (disky pres UASP/SCSI se dnes nepoznaji a watcher se nespusti) a pridat diagnostiku do stavu agenta (kolik watcheru, kolik udalosti,
+   posledni udalost); (b) nove nastaveni "Sledovat i soubory Z USB (audit Windows)" (smer se nastavuje zde); (c) navod na GPO
+   (Audit Removable Storage) v karte Agent a v README.
+
+
+(navrh do budoucna: Datum nakupu / zaruka - rucni pole, vyzaduje migraci; odlozene sloupce z polozky 6; upozorneni "po zmene tokenu aktualizujte GPO" je jiz v kartě Spojeni)
+
+## Hotovo (vydano) ve verzi 1.8.0 (agent 2.1.0)
 1. Chyba agenta klikatelna: klik na "chyba"/"varovani" otevre okno s duvodem (text chyby, cas, kdy naposledy komunikoval, verze, cil)
    a s akcemi: "Zkusit znovu" (vynuti okamzity kontakt/inventuru agenta pri nejblizsim pollu), "Znovu spojit" (smaze zapamatovanou vadnou verzi
    a chybu, aby agent zkusil aktualizaci znovu), pripadne navod/prikaz pro rucni opravu. Vyzaduje novy prikaz v odpovedi na poll

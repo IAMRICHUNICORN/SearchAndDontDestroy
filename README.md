@@ -53,8 +53,8 @@ docker compose up -d --build
 
 ```bash
 ./scripts/build-image.sh amd64        # nebo arm64 podle procesoru QNAPu
-# vznikne dist/hwsw-monitor-1.8.0-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
-docker load -i hwsw-monitor-1.8.0-amd64.tar
+# vznikne dist/hwsw-monitor-1.9.0-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
+docker load -i hwsw-monitor-1.9.0-amd64.tar
 docker compose up -d --no-build
 ```
 
@@ -93,7 +93,7 @@ Složka `data/tls/` není součástí kompletní zálohy stahované z webu; zál
 
 ```bash
 ./scripts/update.sh                                   # sestaví novou verzi ze zdrojů
-./scripts/update.sh hwsw-monitor-1.8.0-amd64.tar      # nebo nahraje hotový image
+./scripts/update.sh hwsw-monitor-1.9.0-amd64.tar      # nebo nahraje hotový image
 ```
 
 Co se děje s databází:
@@ -127,7 +127,9 @@ Při vývoji další verze: zvyšte číslo v `app/VERSION` a změny tabulek př
 
 ## USB
 
-Evidují se jen **úložná zařízení** (disky, flash). U připojeného úložiště agent hlásí písmeno jednotky, název svazku, souborový systém, velikost, obsazení a stav BitLocker To Go. Při odpojení se v historii uloží **změna obsazeného místa** za dobu připojení. Volitelně (*Nastavení → Agent*, výchozí stav **vypnuto**) lze zapnout **seznam souborů zapsaných na USB** (názvy a velikosti, uchování nastavitelné ve dnech). Sledování jmen souborů zaměstnanců vyžaduje vnitřní směrnici o monitoringu (§ 316 zákoníku práce). Prevenci (zákaz zápisu na výměnné disky, povinné BitLocker To Go) řešte v GPO: *Computer Configuration → Administrative Templates → System → Removable Storage Access → Removable Disks: Deny write access*.
+Hlásí se jen **úložiště s médiem** (disk, flash, vložená karta) a **telefony / přenosná zařízení**. Myš, klávesnice, dongle, Bluetooth, zvuk, kamera, tiskárna, hub a prázdná čtečka nebo kabel bez úložiště se nehlásí. Po připojení úložiště nebo telefonu se na Přehledu zobrazí **varování**, které zůstane, dokud ho správce nepřevezme (*USB → Varování*). U úložiště agent hlásí písmeno jednotky, název svazku, souborový systém, velikost, obsazení a stav BitLocker To Go; při odpojení se uloží změna obsazeného místa a souhrn přenosu (počet souborů a MB na USB a z USB).
+
+**Soubory na USB a z USB** (*Nastavení → Agent*, výchozí stav **vypnuto**): soubory zapsané **na** USB agent zachytí sám (název USB, uživatel, program, velikost). Soubory čtené **z** USB (kopírování na počítač) agent zjistí z auditu Windows (událost 4663), který se zapíná v GPO: *Computer Configuration → Policies → Windows Settings → Security Settings → Advanced Audit Policy Configuration → Audit Policies → Object Access → Audit Removable Storage = Success* (postup je i na stránce *Agent pro Windows*), a v Nastavení zapnout *Sledovat i soubory čtené Z USB*. Zvětšete Security log (např. 256 MB). Sledování jmen souborů zaměstnanců vyžaduje vnitřní směrnici o monitoringu (§ 316 zákoníku práce). Prevenci (zákaz zápisu na výměnné disky, povinné BitLocker To Go) řešte v GPO: *Computer Configuration → Administrative Templates → System → Removable Storage Access → Removable Disks: Deny write access*.
 
 ## Jazyk rozhraní
 

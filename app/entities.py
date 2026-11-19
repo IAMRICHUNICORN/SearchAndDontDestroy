@@ -109,12 +109,27 @@ _TRANS = ("(d.agent_error LIKE '%nelze připojit%' OR d.agent_error LIKE '%Unabl
           "OR d.agent_error LIKE '%connection was closed%' OR d.agent_error LIKE '%připojení bylo zavřeno%' "
           "OR d.agent_error LIKE '%No connection could be made%' OR d.agent_error LIKE '%Nebylo možné navázat%')")
 _BEAT_OK = "COALESCE(d.agent_beat, '') >= datetime('now', '-30 minutes')"
+_LC = "MAX(COALESCE(d.agent_beat, ''), COALESCE(d.last_inventory, ''))"
+# aktualni chyba agenta (mladsi nez 24 h; prechodna chyba spojeni s agentem, ktery se znovu ozval, se nepocita)
+_ERR_CUR = ("(COALESCE(d.agent_error, '') <> '' AND d.agent_error_at >= datetime('now', '-24 hours') "
+            "AND (%(trans)s = 0 OR NOT %(beat)s))" % {"trans": _TRANS, "beat": _BEAT_OK})
+# kolik z poslednich __ERRD__ dnu (vcetne dneska) se u zarizeni objevila chyba agenta
+_ERR_DAYS = ("(SELECT COUNT(DISTINCT l.day) FROM agent_error_log l WHERE l.device_id = d.id "
+             "AND l.day >= date('now', '-' || (__ERRD__ - 1) || ' days'))")
+# PC odpovida na siti, agent se ale neozval (bez agenta se sem nepocitaji PC, kde agent nikdy nebyl)
+_SILENT_ON = "(d.online = 1 AND %(lc)s <> '' AND %(lc)s < datetime('now', '-30 minutes'))" % {"lc": _LC}
+# "chyba" az kdyz problem trva vic nez nastaveny pocet dni; kratsi problem je jen varovani
 _HEALTH_BAD = (
-    "CASE WHEN %(comp)s = 1 AND COALESCE(d.last_inventory, '') = '' THEN 'agent nikdy neposlal data; ' ELSE '' END || "
-    "CASE WHEN COALESCE(d.agent_error, '') <> '' AND d.agent_error_at >= datetime('now', '-24 hours') "
-    "AND (%(trans)s = 0 OR NOT %(beat)s) THEN 'chyba agenta (' || d.agent_error || '); ' ELSE '' END"
-    % {"comp": _IS_COMPUTER, "trans": _TRANS, "beat": _BEAT_OK})
+    "CASE WHEN %(err)s AND %(days)s >= __ERRD__ THEN 'chyba agenta (' || d.agent_error || '), opakuje se ' || %(days)s || ' dny; ' ELSE '' END || "
+    "CASE WHEN %(son)s AND %(lc)s < datetime('now', '-__ERRD__ days') "
+    "THEN 'PC je online, ale agent se nespojil déle než __ERRD__ dny (od ' || %(lc)s || ' UTC); ' ELSE '' END"
+    % {"err": _ERR_CUR, "days": _ERR_DAYS, "son": _SILENT_ON, "lc": _LC})
 _HEALTH_WARN = (
+    "CASE WHEN %(err)s AND %(days)s < __ERRD__ THEN 'chyba agenta (' || d.agent_error || '); ' ELSE '' END || "
+    "CASE WHEN %(son)s AND %(lc)s >= datetime('now', '-__ERRD__ days') "
+    "THEN 'PC je online, ale agent se nespojil od ' || %(lc)s || ' (UTC); ' ELSE '' END || "
+    "CASE WHEN %(comp)s = 1 AND COALESCE(d.last_inventory, '') = '' AND (COALESCE(d.agent_version, '') <> '' OR COALESCE(d.agent_beat, '') <> '') "
+    "THEN 'agent zatím neposlal inventuru; ' ELSE '' END || "
     "CASE WHEN COALESCE(d.last_inventory, '') <> '' AND d.last_inventory < datetime('now', '-__STALE__ hours') "
     "THEN 'agent neposlal data déle než __STALE__ h; ' ELSE '' END || "
     "CASE WHEN %(vs)s = 'zastaralý' THEN 'zastaralá verze agenta; ' WHEN %(vs)s = 'neznámá' THEN 'neznámá verze agenta; ' ELSE '' END || "
@@ -131,16 +146,21 @@ _HEALTH_WARN = (
     "THEN 'neúplná data (' || json_extract(d.agent_info, '$.partial[0]') || '...); ' ELSE '' END || "
     "CASE WHEN COALESCE(d.mac, '') <> '' AND EXISTS (SELECT 1 FROM devices o WHERE o.id <> d.id AND o.mac = d.mac "
     "AND COALESCE(o.agent_version, '') <> '') THEN 'duplicitní MAC (klon?); ' ELSE '' END"
-    % {"vs": _VER_STATUS, "skew": _SKEW, "trans": _TRANS, "beat": _BEAT_OK})
-_HEALTH = ("CASE WHEN (%(bad)s) <> '' THEN 'chyba' WHEN (%(warn)s) <> '' THEN 'varování' "
-           "WHEN %(has)s THEN 'v pořádku' ELSE '' END" % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT})
-_HEALTH_REASON = "rtrim((%s) || (%s), '; ')" % (_HEALTH_BAD, _HEALTH_WARN)
+    % {"vs": _VER_STATUS, "skew": _SKEW, "trans": _TRANS, "beat": _BEAT_OK, "err": _ERR_CUR, "days": _ERR_DAYS,
+       "son": _SILENT_ON, "lc": _LC, "comp": _IS_COMPUTER})
+# PC, kde agent nikdy nebyl: samostatny stav "bez agenta" (neni to chyba ani varovani)
+_NOAGENT = "(%s = 1 AND NOT %s AND COALESCE(d.agent_beat, '') = '')" % (_IS_COMPUTER, _HAS_AGENT)
+_HEALTH = ("CASE WHEN %(na)s THEN 'bez agenta' WHEN (%(bad)s) <> '' THEN 'chyba' WHEN (%(warn)s) <> '' THEN 'varování' "
+           "WHEN %(has)s THEN 'v pořádku' ELSE '' END"
+           % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT, "na": _NOAGENT})
+_HEALTH_REASON = ("CASE WHEN %(na)s THEN 'Agent na počítači není nainstalovaný nebo se ještě neozval' "
+                  "ELSE rtrim((%(bad)s) || (%(warn)s), '; ') END" % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "na": _NOAGENT})
 # poradi: nejhorsi prvni
-_HEALTH_ORDER = ("CASE WHEN (%(bad)s) <> '' THEN 0 WHEN (%(warn)s) <> '' THEN 1 WHEN %(has)s THEN 2 ELSE 3 END"
-                 % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT})
+_HEALTH_ORDER = ("CASE WHEN %(na)s THEN 3 WHEN (%(bad)s) <> '' THEN 0 WHEN (%(warn)s) <> '' THEN 1 WHEN %(has)s THEN 2 ELSE 4 END"
+                 % {"bad": _HEALTH_BAD, "warn": _HEALTH_WARN, "has": _HAS_AGENT, "na": _NOAGENT})
 
 # komunikace agenta: posledni kontakt = novejsi z heartbeatu a inventury; agent se hlasi nejmene kazdych 5 minut
-_LAST_CONTACT = "MAX(COALESCE(d.agent_beat, ''), COALESCE(d.last_inventory, ''))"
+_LAST_CONTACT = _LC
 _COMM = ("CASE WHEN %(lc)s = '' THEN CASE WHEN %(comp)s = 1 THEN 'nikdy' ELSE '' END "
          "WHEN %(lc)s >= datetime('now', '-12 minutes') THEN 'komunikuje' ELSE 'mlčí' END"
          % {"lc": _LAST_CONTACT, "comp": _IS_COMPUTER})
@@ -174,6 +194,10 @@ _DEVICE_REF.update({
     "device_note": ("Poznámka k zařízení", "d.note", "text"),
 })
 
+# USB varovani: pripojeni uloziste s mediem nebo telefonu (ostatni zarizeni se neevidují)
+USB_ALERT_SQL = ("(x.action IN ('připojeno', 'nalezeno') AND x.class IN ('úložiště', 'telefon / přenosné zařízení'))")
+_USB_ALERT_X = ("(x.action IN ('připojeno', 'nalezeno') AND x.class IN ('úložiště', 'telefon / přenosné zařízení'))")
+
 ENTITIES = {
     "devices": {
         "label": "Zařízení (HW a síť)",
@@ -187,6 +211,10 @@ ENTITIES = {
             "agent_state": ("Stav agenta", _AGENT_STATE, "text"),
             "is_computer": ("Je to počítač", _IS_COMPUTER, "bool"),
             "online": ("Online", "d.online", "bool"),
+            "online_state": ("Online / offline", "CASE WHEN d.online = 1 THEN 'online' ELSE 'offline' END", "text"),
+            "offline_min": ("Offline již (min)",
+                            "CASE WHEN d.online = 0 AND COALESCE(d.last_seen, '') <> '' "
+                            "THEN CAST(ROUND((julianday('now') - julianday(d.last_seen)) * 1440) AS INTEGER) END", "num"),
             "ip": ("IP adresa", "d.ip", "text"),
             "ip_conflict": ("Konflikt IP", _IP_CONFLICT, "bool"),
             "mac": ("MAC adresa", "d.mac", "text"),
@@ -293,7 +321,9 @@ ENTITIES = {
                   "_hreason": _HEALTH_REASON,
                   "_cur": "d.user_current", "_login": "d.last_login_at", "_groups": _GROUPS_JSON,
                   "_ipc": _IP_CONFLICT_WITH, "_ipold": _IP_OLD_WITH,
-                  "_beat": "d.agent_beat", "_comm": _COMM, "_commr": _COMM_REASON},
+                  "_beat": "d.agent_beat", "_comm": _COMM, "_commr": _COMM_REASON,
+                  "_offmin": "CASE WHEN d.online = 0 AND COALESCE(d.last_seen, '') <> '' "
+                             "THEN CAST(ROUND((julianday('now') - julianday(d.last_seen)) * 1440) AS INTEGER) END"},
         "sort_expr": {"agent_state": _AGENT_STATE_ORDER, "ip": _ip_sort("d.ip"), "agent_health": _HEALTH_ORDER,
                       "agent_version": _ver_key("d.agent_version")},
     },
@@ -390,8 +420,15 @@ ENTITIES = {
             "drive": ("Jednotka", "x.drive", "text"),
             "label": ("Název svazku", "x.label", "text"),
             "delta_mb": ("Změna obsazeného místa (MB)", "x.delta_mb", "num"),
+            "alert": ("Nepřevzaté varování", "CASE WHEN " + _USB_ALERT_X + " AND COALESCE(x.ack_at, '') = '' THEN 1 ELSE 0 END", "bool"),
+            "ack_at": ("Převzato (čas)", "x.ack_at", "date"),
+            "ack_by": ("Převzal", "x.ack_by", "text"),
+            "files_to": ("Souborů na USB", "x.files_to", "num"),
+            "files_from": ("Souborů z USB", "x.files_from", "num"),
+            "mb_to": ("Data na USB (MB)", "x.mb_to", "num"),
+            "mb_from": ("Data z USB (MB)", "x.mb_from", "num"),
         }, **_DEVICE_REF),
-        "default": ["ts", "action", "name", "label", "serial", "delta_mb", "hostname", "event_user"],
+        "default": ["ts", "action", "name", "label", "serial", "files_to", "files_from", "hostname", "event_user"],
         "sort": ("ts", "desc"),
     },
     "usb_current": {
@@ -424,26 +461,35 @@ ENTITIES = {
             "connected_hours": ("Doba připojení (h)",
                                 "CASE WHEN COALESCE(x.connected_at, '') <> '' "
                                 "THEN ROUND((julianday('now') - julianday(x.connected_at)) * 24, 1) END", "num"),
+            "files_to": ("Souborů na USB od připojení",
+                         "(SELECT COUNT(*) FROM usb_files f WHERE f.device_id = x.device_id AND f.pnp_id = x.pnp_id "
+                         "AND f.direction = 'na USB' AND f.ts >= x.connected_at)", "num"),
+            "files_from": ("Souborů z USB od připojení",
+                           "(SELECT COUNT(*) FROM usb_files f WHERE f.device_id = x.device_id AND f.pnp_id = x.pnp_id "
+                           "AND f.direction = 'z USB' AND f.ts >= x.connected_at)", "num"),
         }, **_DEVICE_REF),
-        "default": ["state", "name", "label", "size_gb", "used_gb", "encrypted", "serial", "hostname", "logged_user",
+        "default": ["state", "name", "label", "size_gb", "used_gb", "files_to", "files_from", "encrypted", "serial", "hostname", "logged_user",
                     "connected_at", "source"],
         "sort": ("connected_at", "desc"),
     },
     "usb_files": {
-        "label": "USB – soubory zapsané na úložiště",
+        "label": "USB – soubory na a z úložiště",
         "from": "usb_files x " + _DEV,
         "device_id": "x.device_id",
         "id": "x.id",
         "columns": dict({
             "ts": ("Čas", "x.ts", "date"),
+            "direction": ("Směr", "x.direction", "text"),
             "action": ("Akce", "x.action", "text"),
             "path": ("Soubor", "x.path", "text"),
+            "process": ("Program", "x.process", "text"),
+            "usb_name": ("USB zařízení", "x.usb_name", "text"),
             "size_bytes": ("Velikost (B)", "x.size_bytes", "num"),
             "size_mb": ("Velikost (MB)", "ROUND(x.size_bytes / 1048576.0, 2)", "num"),
             "drive": ("Jednotka", "x.drive", "text"),
             "event_user": ("Uživatel", "x.logged_user", "text"),
         }, **_DEVICE_REF),
-        "default": ["ts", "hostname", "event_user", "action", "path", "size_mb", "drive"],
+        "default": ["ts", "hostname", "event_user", "usb_name", "direction", "action", "path", "size_mb", "process"],
         "sort": ("ts", "desc"),
     },
     "agent_problems": {
@@ -555,6 +601,15 @@ def stale_hours(conn):
         return 72
 
 
+def error_days(conn):
+    """Po kolika dnech opakovani se chyba agenta povazuje za "chybu" (kratsi problem je varovani)."""
+    try:
+        row = conn.execute("SELECT value FROM settings WHERE key = 'agent_error_days'").fetchone()
+        return min(60, max(1, int(float(row["value"])))) if row else 3
+    except Exception:
+        return 3
+
+
 def _agent_globals(conn):
     """Globalni cilova verze agenta (jako SQL retezec) a po kolika hodinach je inventura 'stara'."""
     from . import agentrel
@@ -574,9 +629,11 @@ def _resolve(conn, ent):
         return ent
     hours = str(stale_hours(conn))
     gtarget, invh = _agent_globals(conn)
+    errd = str(error_days(conn))
 
     def sub(text):
-        return (text.replace("__STALE__", hours).replace("__GTARGET__", gtarget).replace("__INVH__", invh))
+        return (text.replace("__STALE__", hours).replace("__GTARGET__", gtarget).replace("__INVH__", invh)
+                .replace("__ERRD__", errd))
 
     out = dict(ent)
     out["columns"] = {k: (v[0], sub(v[1]), v[2]) for k, v in ent["columns"].items()}
@@ -776,10 +833,13 @@ def agent_summary(conn):
     vs, health = ent["columns"]["agent_ver_status"][1], ent["columns"]["agent_health"][1]
     vrow = conn.execute("SELECT COALESCE(SUM(%s = 'aktuální'), 0) AS cur, COALESCE(SUM(%s IN ('zastaralý', 'neznámá')), 0) AS old, "
                         "COALESCE(SUM(%s = 'novější'), 0) AS newer, COALESCE(SUM(%s = 'v pořádku'), 0) AS h_ok, "
-                        "COALESCE(SUM(%s = 'varování'), 0) AS h_warn, COALESCE(SUM(%s = 'chyba'), 0) AS h_bad "
-                        "FROM devices d" % (vs, vs, vs, health, health, health)).fetchone()
-    out.update({k: int(vrow[k]) for k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad")})
+                        "COALESCE(SUM(%s = 'varování'), 0) AS h_warn, COALESCE(SUM(%s = 'chyba'), 0) AS h_bad, "
+                        "COALESCE(SUM(%s = 'bez agenta'), 0) AS h_noagent "
+                        "FROM devices d" % (vs, vs, vs, health, health, health, health)).fetchone()
+    out.update({k: int(vrow[k]) for k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad", "h_noagent")})
     out["pinned"] = int(conn.execute("SELECT COUNT(*) FROM devices WHERE COALESCE(agent_target, '') <> ''").fetchone()[0])
+    orow = conn.execute("SELECT COALESCE(SUM(online = 1), 0) AS on_n, COALESCE(SUM(online = 0), 0) AS off_n FROM devices").fetchone()
+    out["online"], out["offline"] = int(orow["on_n"]), int(orow["off_n"])
     return out
 
 

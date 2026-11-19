@@ -22,5 +22,11 @@
   "date": "2026-11-18",
   "legacy": false,
   "notes": "Příkazy ze serveru (zkusit znovu / znovu spojit), hlášení stavu aktualizace (stahuje / ok / vráceno) a přechodné chyby spojení."
+ },
+ {
+  "version": "2.2.0",
+  "date": "2026-11-19",
+  "legacy": false,
+  "notes": "USB: hlásí se jen úložiště s médiem a telefony (myš, klávesnice, dongle, prázdná čtečka ne), správné zjištění písmene disku (UASP), soubory na i z USB (audit Windows), diagnostika sledování souborů."
  }
 ]

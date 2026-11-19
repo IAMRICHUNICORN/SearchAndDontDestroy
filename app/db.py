@@ -306,6 +306,31 @@ MIGRATIONS = [
         # verze 1.8.0: prikaz pro agenta (zkusit znovu / znovu spojit), doruci se pri nejblizsim kontaktu agenta
         "ALTER TABLE devices ADD COLUMN agent_cmd TEXT DEFAULT ''",
     ],
+    [
+        # verze 1.9.0: historie chyb agenta (po dnech), smer a program u souboru na USB, prevzeti USB varovani, souhrn prenosu
+        """CREATE TABLE agent_error_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+            day TEXT NOT NULL,
+            msg TEXT NOT NULL,
+            first_ts TEXT NOT NULL,
+            last_ts TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(device_id, day, msg))""",
+        "CREATE INDEX idx_agent_error_log_dev ON agent_error_log(device_id, day)",
+        "ALTER TABLE usb_files ADD COLUMN direction TEXT DEFAULT 'na USB'",
+        "ALTER TABLE usb_files ADD COLUMN process TEXT DEFAULT ''",
+        "ALTER TABLE usb_files ADD COLUMN usb_name TEXT DEFAULT ''",
+        "ALTER TABLE usb_events ADD COLUMN ack_at TEXT DEFAULT ''",
+        "ALTER TABLE usb_events ADD COLUMN ack_by TEXT DEFAULT ''",
+        "ALTER TABLE usb_events ADD COLUMN files_to INTEGER",
+        "ALTER TABLE usb_events ADD COLUMN files_from INTEGER",
+        "ALTER TABLE usb_events ADD COLUMN mb_to REAL",
+        "ALTER TABLE usb_events ADD COLUMN mb_from REAL",
+        # drivejsi udalosti se nepovazuji za nova varovani
+        "UPDATE usb_events SET ack_at = ts, ack_by = 'původní záznam' WHERE COALESCE(ack_at, '') = ''",
+        "CREATE INDEX idx_usb_events_ack ON usb_events(ack_at)",
+    ],
 ]
 
 
@@ -645,6 +670,8 @@ DEFAULT_SETTINGS = {
     "usb_files_enabled": "0",        # sledovani souboru zapsanych na USB (vychozi vypnuto)
     "usb_files_days": "90",
     "agent_problems_days": "30",
+    "agent_error_days": "3",         # chyba agenta se z varovani zmeni na "chyba", kdyz trva/opakuje se tolik dni
+    "usb_audit_enabled": "0",        # cist audit vymennych medii z Windows (soubory Z USB; vyzaduje GPO)
 }
 
 

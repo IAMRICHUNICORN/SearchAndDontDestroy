@@ -227,7 +227,7 @@ def dashboard(user=Depends(active_user)):
             "agent_versions": ({"target": agentrel.global_target(db.get_settings(conn, decrypt=False)),
                                 "latest": agentrel.current_version()} if admin else None),
             "agent_summary": ({k: v for k, v in entities.agent_summary(conn).items()
-                               if k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad", "never", "stale", "ok")}
+                               if k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad", "h_noagent", "never", "stale", "ok")}
                               if admin else None),
             "by_type": [dict(r) for r in conn.execute(
                 "SELECT CASE WHEN device_type = '' THEN 'neznámé' ELSE device_type END AS label, COUNT(*) AS n "
@@ -258,6 +258,12 @@ def dashboard(user=Depends(active_user)):
             data["usb_recent"] = [dict(r) for r in conn.execute(
                 "SELECT e.ts, e.action, e.name, e.class, e.serial, e.logged_user AS user, d.hostname, "
                 "e.device_id FROM usb_events e JOIN devices d ON d.id = e.device_id ORDER BY e.id DESC LIMIT 15")]
+            data["usb_alerts"] = [dict(r) for r in conn.execute(
+                "SELECT e.id, e.ts, e.action, e.name, e.class, e.label, e.drive, e.serial, e.logged_user AS user, d.hostname, "
+                "e.device_id FROM usb_events e JOIN devices d ON d.id = e.device_id WHERE " + entities.USB_ALERT_SQL.replace("x.", "e.")
+                + " AND COALESCE(e.ack_at, '') = '' ORDER BY e.id DESC LIMIT 50")]
+            data["usb_alerts_total"] = one("SELECT COUNT(*) FROM usb_events e WHERE " + entities.USB_ALERT_SQL.replace("x.", "e.")
+                                           + " AND COALESCE(e.ack_at, '') = ''")
             data["jobs"] = [dict(r) for r in conn.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 6")]
             data["agents"] = one("SELECT COUNT(*) FROM devices WHERE agent_version <> ''")
     return data
@@ -569,6 +575,8 @@ def device_detail(device_id: int, view: Optional[int] = None, user=Depends(activ
                     "agent_comm_reason", "agent_next_beat")
             _m, srows, _t = entities.run_query(conn, "devices", list(keys), only_device=device_id, limit=1)
             device["agent_status"] = ({k: srows[0][k] for k in keys} if srows else None)
+            device["agent_errors"] = q("SELECT day, msg, first_ts, last_ts, count FROM agent_error_log WHERE device_id = ? "
+                                       "ORDER BY day DESC, last_ts DESC LIMIT 100")
         else:
             for k in ("agent_info", "agent_error", "agent_error_at", "agent_target", "agent_beat", "agent_cmd"):
                 device.pop(k, None)
@@ -885,7 +893,7 @@ def settings_put(body: dict = Body(...), user=Depends(admin_user)):
     numeric = {"ad_interval_min": (15, 10080), "scan_interval_min": (5, 10080), "winrm_interval_min": (60, 43200),
                "agent_inventory_hours": (1, 168), "offline_after_min": (5, 1440), "agent_stale_hours": (1, 8760), "backup_hour": (0, 23),
                "backup_keep": (1, 365), "usb_events_keep_days": (7, 3650), "usb_files_days": (1, 3650),
-               "agent_problems_days": (1, 365)}
+               "agent_problems_days": (1, 365), "agent_error_days": (1, 60)}
     with db.db() as conn:
         for key in db.DEFAULT_SETTINGS:
             if key not in body or key in ("agent_target_version", "agent_target_gen"):
@@ -971,6 +979,23 @@ def _check_agent(request: Request):
         raise HTTPException(413, "Příliš velká data")
 
 
+@app.post("/api/usb/ack")
+def usb_ack(body: dict = Body(...), user=Depends(admin_user)):
+    """Prevzeti USB varovani: konkretni udalosti (ids), nebo vsech nepřevzatych (all)."""
+    where = entities.USB_ALERT_SQL.replace("x.", "e.") + " AND COALESCE(e.ack_at, '') = ''"
+    with db.db() as conn:
+        if body.get("all"):
+            cur = conn.execute("UPDATE usb_events AS e SET ack_at = ?, ack_by = ? WHERE " + where, (db.now(), user["username"]))
+        else:
+            ids = [int(i) for i in (body.get("ids") or []) if str(i).isdigit()][:500]
+            if not ids:
+                raise HTTPException(400, "Nic k převzetí")
+            cur = conn.execute("UPDATE usb_events AS e SET ack_at = ?, ack_by = ? WHERE " + where
+                               + " AND e.id IN (%s)" % ",".join("?" * len(ids)), (db.now(), user["username"]) + tuple(ids))
+    bus.publish({"type": "usb_ack"})
+    return {"ok": True, "acknowledged": cur.rowcount}
+
+
 AGENT_CMDS = ("retry", "reconnect")
 
 
@@ -987,7 +1012,8 @@ def _agent_reply(conn, request=None, hostname="", reported_version=""):
     reply = {"ok": True, "agent_version": gtarget, "autoupdate": True,
              "inventory_hours": int(cfg["agent_inventory_hours"] or 6),
              "target_version": target, "target_gen": int(cfg.get("agent_target_gen") or 1),
-             "usb_files": cfg.get("usb_files_enabled") == "1"}
+             "usb_files": cfg.get("usb_files_enabled") == "1",
+             "usb_audit": cfg.get("usb_files_enabled") == "1" and cfg.get("usb_audit_enabled") == "1"}
     if hostname and not agentrel.is_legacy(reported_version):
         row = conn.execute("SELECT id, agent_cmd FROM devices WHERE hostname = ? ORDER BY id LIMIT 1", (hostname,)).fetchone()
         if row and row["agent_cmd"] in AGENT_CMDS:

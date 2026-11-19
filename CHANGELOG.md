@@ -2,6 +2,19 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.9.0
+- **Agent 2.2.0:** nasazuje se stejně jako dřív (cíl „Nejnovější" přepne agenty 2.0.0 a 2.1.0 do 5 minut od aktualizace serveru; chcete-li ho nejdřív vyzkoušet, nastavte
+  před aktualizací v *Nastavení → Agent* cíl 2.1.0 a 2.2.0 připněte jednomu PC).
+- **USB – přesnější hlášení:** hlásí se jen úložiště s médiem (disk, flash, vložená karta) a telefony / přenosná zařízení. Myš, klávesnice, dongle, Bluetooth, zvuk, kamera, tiskárna,
+  hub a prázdná čtečka nebo kabel bez úložiště se nehlásí. Agent správně pozná písmeno disku i u disků přes UASP/SCSI a po připojení počká na přidělení písmene.
+- **USB – varování:** po připojení úložiště nebo telefonu se na Přehledu zobrazí trvalé varování (dokud ho správce nepřevezme), trvalé upozornění v okně a záložka *USB → Varování*.
+- **USB – přenos dat:** soubory **na USB** (název USB, uživatel, program, velikost) i soubory **z USB** (z auditu Windows, vyžaduje GPO *Audit Removable Storage*; návod je na stránce Agent
+  a zapíná se v *Nastavení → Agent*). U odpojení je souhrn: počet souborů a MB tam a zpět. Oprava: sledování souborů se dřív nespustilo, když se nepodařilo zjistit písmeno disku.
+  Do stavu agenta přibyla diagnostika (sledované disky, zachycené události).
+- **Stav agenta:** „chyba" jen když se problém opakuje alespoň 3 dny (nastavitelné) nebo se agent 3 dny nespojil, přestože je PC online; kratší problém je varování.
+  Počítač bez agenta má vlastní stav *bez agenta*. Historie chyb se uchovává a je vidět po rozkliknutí stavu (schéma databáze 8, tabulka `agent_error_log`).
+- **Zařízení:** rychlé filtry *Online* / *Offline*; u offline zařízení je vidět, jak dlouho je offline (např. „offline · 3 h 20 min"); sloupce *Online / offline* a *Offline již (min)*.
+
 ## 1.8.0
 - **Agent 2.1.0:** příkazy ze serveru (*Zkusit znovu*, *Znovu spojit*) a hlášení stavu aktualizace (probíhá / proběhla / vráceno). Nasazuje se stejně jako 2.0.0:
   **Pozor:** při cíli „Nejnovější" se agenti 2.0.0 přepnou na 2.1.0 do 5 minut od aktualizace serveru. Chcete-li novou verzi nejdřív vyzkoušet, nastavte před aktualizací

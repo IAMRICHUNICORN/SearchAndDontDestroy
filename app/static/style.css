@@ -255,3 +255,10 @@ th.chk, td.chk { width: 40px; padding-right: 0; cursor: pointer; }
 .lang-switch button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 td.clickable { cursor: pointer; }
 td.clickable:hover { text-decoration: underline; }
+
+.toast.warn { border-left-color: #f0b429; }
+.toast.sticky { display: flex; gap: 10px; align-items: flex-start; }
+.toast-close { background: transparent; border: 0; color: #fff; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; }
+.note-box.usb-alert { border-left: 4px solid #f0b429; }
+table.plain { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.plain th, table.plain td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line, #ddd); }

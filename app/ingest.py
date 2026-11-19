@@ -37,7 +37,9 @@ USB_CLASSES = {
 }
 
 
-USB_STORAGE = "úložiště"   # evidujeme jen USB zarizeni pro ukladani dat
+USB_STORAGE = "úložiště"   # evidujeme jen USB zarizeni pro ukladani dat a telefony / prenosna zarizeni
+USB_PHONE = "telefon / přenosné zařízení"
+USB_ALERT_CLASSES = (USB_STORAGE, USB_PHONE)
 
 
 def s(value, limit=255):
@@ -136,7 +138,8 @@ def _volume(u):
 
 def sync_usb(conn, device, usb_list, user):
     """Porovna hlasena USB uloziste se stavem v DB, zapise udalosti. Vraci nove udalosti.
-    Evidujeme jen zarizeni pro ukladani dat; ostatni tridy USB se zahazuji."""
+    Evidujeme jen uloziste s mediem a telefony / prenosna zarizeni; ostatni tridy USB (mys, klavesnice, dongle...) se zahazuji.
+    Agent od 2.2.0 posila u uloziste priznak media (false = prazdna ctecka, dock, kabel) - takove se nehlasi."""
     dev_id = device["id"]
     reported = {}
     for u in usb_list or []:
@@ -144,8 +147,11 @@ def sync_usb(conn, device, usb_list, user):
             continue
         pnp = s(u.get("pnp_id"), 400).upper()
         cls = USB_CLASSES.get(s(u.get("class"), 80).lower(), s(u.get("class"), 80))
-        if pnp and cls == USB_STORAGE:
-            reported[pnp] = u
+        if not pnp or cls not in USB_ALERT_CLASSES:
+            continue
+        if cls == USB_STORAGE and u.get("media") is False:
+            continue
+        reported[pnp] = u
     current = {r["pnp_id"]: r for r in conn.execute("SELECT * FROM usb_current WHERE device_id = ?", (dev_id,))}
     baseline = bool(device["usb_baseline"])
     events = []
@@ -175,8 +181,8 @@ def sync_usb(conn, device, usb_list, user):
                      "serial, class, logged_user, drive, label) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (dev_id, ts, action, pnp) + vals + (s(user), vol["drive"] if vol else "",
                                                          vol["label"] if vol else ""))
-        if baseline:
-            events.append({"action": "připojeno", "name": vals[0], "class": vals[5], "serial": vals[4]})
+        events.append({"action": action, "name": vals[0], "class": vals[5], "serial": vals[4], "alert": True,
+                       "label": vol["label"] if vol else "", "drive": vol["drive"] if vol else ""})
     for pnp, r in current.items():
         if pnp in reported:
             continue
@@ -184,10 +190,18 @@ def sync_usb(conn, device, usb_list, user):
         delta = None
         if r["used_gb"] is not None and r["used_start_gb"] is not None:
             delta = round((r["used_gb"] - r["used_start_gb"]) * 1024, 1)
+        # souhrn prenosu dat za dobu pripojeni
+        tot = conn.execute(
+            "SELECT SUM(CASE WHEN direction = 'na USB' THEN 1 ELSE 0 END) AS nt, SUM(CASE WHEN direction = 'z USB' THEN 1 ELSE 0 END) AS nf, "
+            "SUM(CASE WHEN direction = 'na USB' THEN COALESCE(size_bytes, 0) ELSE 0 END) AS bt, "
+            "SUM(CASE WHEN direction = 'z USB' THEN COALESCE(size_bytes, 0) ELSE 0 END) AS bf "
+            "FROM usb_files WHERE device_id = ? AND pnp_id = ? AND ts >= ?", (dev_id, pnp, r["connected_at"] or "")).fetchone()
         conn.execute("INSERT INTO usb_events(device_id, ts, action, pnp_id, name, manufacturer, vid, pid, "
-                     "serial, class, logged_user, drive, label, delta_mb) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                     "serial, class, logged_user, drive, label, delta_mb, files_to, files_from, mb_to, mb_from) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (dev_id, ts, "odpojeno", pnp, r["name"], r["manufacturer"], r["vid"], r["pid"],
-                      r["serial"], r["class"], s(user), r["drive"], r["label"], delta))
+                      r["serial"], r["class"], s(user), r["drive"], r["label"], delta,
+                      tot["nt"] or 0, tot["nf"] or 0, round((tot["bt"] or 0) / 1048576.0, 2), round((tot["bf"] or 0) / 1048576.0, 2)))
         events.append({"action": "odpojeno", "name": r["name"], "class": r["class"], "serial": r["serial"]})
     if not baseline:
         conn.execute("UPDATE devices SET usb_baseline = 1 WHERE id = ?", (dev_id,))
@@ -196,23 +210,48 @@ def sync_usb(conn, device, usb_list, user):
     return events
 
 
-FILE_ACTIONS = {"zapis": "zápis", "prejmenovani": "přejmenování"}
+FILE_ACTIONS = {"zapis": "zápis", "prejmenovani": "přejmenování", "cteni": "čtení"}
 
 
 def store_usb_files(conn, device, files, user):
-    """Ulozi seznam souboru zapsanych na USB (jen kdyz je funkce v Nastaveni zapnuta). Vraci pocet ulozenych."""
+    """Ulozi seznam souboru na USB uloziste (jen kdyz je funkce v Nastaveni zapnuta). Vraci pocet ulozenych.
+    Smer: 'na USB' (zapis z watcheru agenta) nebo 'z USB' (cteni, z auditu Windows - jen kdyz je zapnuty usb_audit_enabled)."""
     row = conn.execute("SELECT value FROM settings WHERE key = 'usb_files_enabled'").fetchone()
     if not row or row["value"] != "1" or not isinstance(files, list):
         return 0
+    arow = conn.execute("SELECT value FROM settings WHERE key = 'usb_audit_enabled'").fetchone()
+    audit_on = bool(arow and arow["value"] == "1")
+    cur = {r["pnp_id"]: r for r in conn.execute("SELECT pnp_id, name, drive FROM usb_current WHERE device_id = ?", (device["id"],))}
+    by_drive = {}
+    for r in cur.values():
+        for d in (r["drive"] or "").split(","):
+            if d.strip():
+                by_drive[d.strip().upper()] = r
     n = 0
     for f in files[:1000]:
         if not isinstance(f, dict) or not s(f.get("path"), 500):
             continue
+        direction = "z USB" if s(f.get("direction"), 10) == "z USB" else "na USB"
+        if direction == "z USB" and not audit_on:
+            continue
         size = f.get("size")
-        conn.execute("INSERT INTO usb_files(device_id, ts, pnp_id, drive, path, size_bytes, action, logged_user) "
-                     "VALUES(?,?,?,?,?,?,?,?)",
-                     (device["id"], now(), s(f.get("pnp_id"), 400).upper(), s(f.get("drive"), 8), s(f.get("path"), 500),
-                      num(size, None) if size is not None else None, FILE_ACTIONS.get(s(f.get("action"), 30), "zápis"), s(user)))
+        pnp = s(f.get("pnp_id"), 400).upper()
+        drive = s(f.get("drive"), 8)
+        usb = cur.get(pnp) or by_drive.get(drive.upper())
+        if usb is not None and not pnp:
+            pnp = usb["pnp_id"]
+        who = s(f.get("user"), 120) or s(user)
+        # stejny soubor ve stejnem smeru se do peti minut nezapisuje znovu (cteni se v auditu opakuje)
+        if conn.execute("SELECT 1 FROM usb_files WHERE device_id = ? AND path = ? AND direction = ? "
+                        "AND ts >= datetime('now', '-5 minutes') LIMIT 1", (device["id"], s(f.get("path"), 500), direction)).fetchone():
+            continue
+        conn.execute("INSERT INTO usb_files(device_id, ts, pnp_id, drive, path, size_bytes, action, logged_user, direction, process, usb_name) "
+                     "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                     (device["id"], now(),
+                      pnp, drive, s(f.get("path"), 500),
+                      num(size, None) if size is not None else None,
+                      FILE_ACTIONS.get(s(f.get("action"), 30), "zápis" if direction == "na USB" else "čtení"), who, direction,
+                      s(f.get("process"), 120), usb["name"] if usb is not None else ""))
         n += 1
     return n
 
@@ -226,6 +265,21 @@ def record_problem(conn, ip, hostname, kind, detail):
                  (ts, ts, s(ip, 45), s(hostname, 63), s(kind, 40), s(detail, 300)))
 
 
+def log_agent_error(conn, dev_id, msg, at, is_new):
+    """Historie chyb agenta po dnech (den, text, prvni a posledni vyskyt, pocet) - zustava k vyhledani i po oprave agenta.
+    Pocita se jen nove hlaseni (stejnou chybu agent posila znovu pri kazdem spojeni, dokud ji server nepotvrdi)."""
+    if not msg:
+        return
+    day = (at or now())[:10]
+    if is_new:
+        conn.execute("INSERT INTO agent_error_log(device_id, day, msg, first_ts, last_ts, count) VALUES(?,?,?,?,?,1) "
+                     "ON CONFLICT(device_id, day, msg) DO UPDATE SET last_ts=excluded.last_ts, count=count+1",
+                     (dev_id, day, msg, at, at))
+    else:
+        conn.execute("INSERT OR IGNORE INTO agent_error_log(device_id, day, msg, first_ts, last_ts, count) VALUES(?,?,?,?,?,1)",
+                     (dev_id, day, msg, at, at))
+
+
 def store_agent_state(conn, dev_id, payload, ts):
     """Zdravi agenta: cas posledniho kontaktu, informace o behu (prava, USB sledovani, hodiny, neuplna data) a posledni chyba."""
     info = payload.get("info")
@@ -236,7 +290,8 @@ def store_agent_state(conn, dev_id, payload, ts):
     except ValueError:
         merged = {}
     if isinstance(info, dict):
-        for k in ("elevated", "usb_watch", "partial", "inv_ms", "clock", "ps", "usb_files", "upd_state", "upd_target", "upd_at", "bad"):
+        for k in ("elevated", "usb_watch", "partial", "inv_ms", "clock", "ps", "usb_files", "upd_state", "upd_target", "upd_at", "bad",
+                  "watch_drives", "file_events", "file_last", "audit_events", "audit_state", "usb_audit"):
             if k in info:
                 merged[k] = info[k] if isinstance(info[k], (bool, int, float)) else (
                     [s(x, 60) for x in info[k]][:20] if isinstance(info[k], list) else s(info[k], 80))
@@ -260,6 +315,8 @@ def store_agent_state(conn, dev_id, payload, ts):
         dev = conn.execute("SELECT hostname, ip, agent_error_at FROM devices WHERE id = ?", (dev_id,)).fetchone()
         if dev and dev["agent_error_at"] != at:
             record_problem(conn, dev["ip"], dev["hostname"], "chyba agenta", s(last_error.get("msg"), 300))
+        if dev:
+            log_agent_error(conn, dev_id, s(last_error.get("msg"), 300), at, dev["agent_error_at"] != at)
     conn.execute("UPDATE devices SET %s WHERE id=?" % ", ".join(sets), vals + [dev_id])
 
 

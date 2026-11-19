@@ -28,6 +28,13 @@ $script:InvMs = 0
 $script:ForceInv = $false
 $script:Watchers = @{}
 $script:FileBuf = @{}
+$script:DriveMap = @{}
+$script:AuditEnabled = $false
+$script:AuditLast = (Get-Date).AddMinutes(-1)
+$script:AuditState = ''
+$script:AuditEvents = 0
+$script:FileEvents = 0
+$script:FileLast = ''
 $ErrorActionPreference = 'Continue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
 
@@ -112,6 +119,12 @@ function Get-AgentInfo {
         elevated = (Test-Elevated)
         usb_watch = [bool]$script:UsbWatch
         usb_files = [bool]$script:FilesEnabled
+        usb_audit = [bool]$script:AuditEnabled
+        watch_drives = @($script:Watchers.Keys | Sort-Object)
+        file_events = [int]$script:FileEvents
+        file_last = [string]$script:FileLast
+        audit_events = [int]$script:AuditEvents
+        audit_state = [string]$script:AuditState
         partial = @($script:Partial)
         inv_ms = [int]$script:InvMs
         clock = ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))
@@ -194,14 +207,22 @@ function Get-VolumeEncrypted([string]$Drive) {
     return ''
 }
 
-function Get-UsbVolumes {
-    # svazky USB disku podle serioveho cisla disku: pismeno, nazev, souborovy system, velikost, volne misto, sifrovani
-    $map = @{}
-    foreach ($dd in (Wmi 'Win32_DiskDrive' "InterfaceType='USB'")) {
-        $serial = ''
+function Get-UsbDisks {
+    # vsechny disky na sbernici USB (i USB disky pres UASP / SCSI, ktere maji InterfaceType SCSI): pismena, velikost, serial
+    $nums = @{}
+    foreach ($md in (Wmi 'MSFT_Disk' 'BusType=7' 'root\Microsoft\Windows\Storage')) {
+        try { $nums[[int]$md.Number] = $true } catch {}
+    }
+    $out = @()
+    foreach ($dd in (Wmi 'Win32_DiskDrive')) {
         $pnp = [string]$dd.PNPDeviceID
-        if ($pnp) { $serial = ((($pnp -split '\\')[-1]) -split '&')[0] }
-        if (-not $serial) { continue }
+        $isUsb = $false
+        try { $isUsb = ((Text $dd.InterfaceType) -eq 'USB') -or ($pnp -like 'USBSTOR*') -or $nums.ContainsKey([int]$dd.Index) } catch {}
+        if (-not $isUsb) { continue }
+        $serials = @()
+        if ($pnp) { $s1 = ((($pnp -split '\\')[-1]) -split '&')[0]; if ($s1) { $serials += $s1.ToUpper() } }
+        $s2 = (Text $dd.SerialNumber).ToUpper()
+        if ($s2) { $serials += $s2 }
         $list = @()
         try {
             $diskId = ([string]$dd.DeviceID).Replace('\', '\\')
@@ -217,72 +238,104 @@ function Get-UsbVolumes {
                 }
             }
         } catch {}
-        $map[$serial.ToUpper()] = $list
+        $size = 0
+        try { $size = [math]::Round([double]$dd.Size / 1GB, 2) } catch {}
+        $out += @{ name = (Text $dd.Caption); manufacturer = (Text $dd.Manufacturer); serials = @($serials); vols = @($list); size_gb = $size; pnp = $pnp; index = [int]$dd.Index; used = $false }
     }
-    return $map
+    return $out
 }
 
 function Get-UsbList {
+    # Hlasi jen to, co se ma hlidat: uloziste S MEDIEM (disk, flash, vlozena karta) a telefony / prenosna zarizeni.
+    # Mys, klavesnice, dongle, Bluetooth, zvuk, kamera, tiskarna, hub a prazdna ctecka / kabel se nehlasi.
     $all = Wmi 'Win32_PnPEntity' "PNPDeviceID LIKE 'USB%'"
-    $volumes = $null
-    $storage = @{}
+    $disks = @(Get-UsbDisks)
+    $storSvc = @('usbstor', 'uaspstor')
+    $phoneSvc = @('wudfwpdmtp', 'wpdusb', 'usbaapl', 'usbaapl64', 'appleusb', 'mtpusb')
+    $phoneName = 'iphone|ipad|apple mobile|android|adb interface|galaxy|pixel|smartphone|mobile phone'
+    $cands = @()
     foreach ($d in $all) {
         $id = [string]$d.PNPDeviceID
-        if ($id -like 'USBSTOR\*') {
-            $serial = ((($id -split '\\')[-1]) -split '&')[0]
-            if ($serial) { $storage[$serial.ToUpper()] = [string]$d.Name }
-        }
-    }
-    $services = @{
-        'hidusb' = 'vstupni zarizeni (HID)'; 'usbstor' = 'uloziste'; 'uaspstor' = 'uloziste';
-        'usbccgp' = 'slozene USB zarizeni'; 'usbprint' = 'tiskarna'; 'usbvideo' = 'kamera';
-        'usbaudio' = 'zvuk'; 'usbaudio2' = 'zvuk'; 'bthusb' = 'Bluetooth'; 'wudfwpdmtp' = 'telefon / prenosne zarizeni';
-        'wpdusb' = 'telefon / prenosne zarizeni'; 'usbser' = 'seriovy port'; 'usbscan' = 'skener';
-        'winusb' = 'USB zarizeni'; 'wudfrd' = 'USB zarizeni'
-    }
-    $classes = @{
-        'DiskDrive' = 'uloziste'; 'HIDClass' = 'vstupni zarizeni (HID)'; 'Keyboard' = 'klavesnice'; 'Mouse' = 'mys';
-        'Image' = 'kamera / skener'; 'Camera' = 'kamera'; 'Printer' = 'tiskarna'; 'Bluetooth' = 'Bluetooth';
-        'Net' = 'sitovy adapter'; 'MEDIA' = 'zvuk'; 'AudioEndpoint' = 'zvuk'; 'WPD' = 'telefon / prenosne zarizeni';
-        'SmartCardReader' = 'ctecka karet'; 'Ports' = 'seriovy port'; 'Biometric' = 'ctecka otisku';
-        'Modem' = 'modem'
-    }
-    $list = @()
-    foreach ($d in $all) {
-        $id = [string]$d.PNPDeviceID
-        if ($id -notmatch '^USB\\VID_([0-9A-F]{4})&PID_([0-9A-F]{4})\\(.+)$') { continue }
-        $usbVid = $Matches[1]; $usbPid = $Matches[2]; $instance = $Matches[3]
+        if ($id -notmatch '^USB\\VID_([0-9A-F]{4})&PID_([0-9A-F]{4})(&MI_[0-9A-F]{2})?\\(.+)$') { continue }
+        $usbVid = $Matches[1]; $usbPid = $Matches[2]; $isMi = [bool]$Matches[3]; $instance = $Matches[4]
         $service = (Text $d.Service).ToLower()
-        if ($service -match '^(usbhub|usbhub3|iusb3hub)$') { continue }
-        if ((Text $d.Name) -match 'Root Hub|USB Hub|Rozbo') { continue }
-        $serial = ''
-        if ($instance -notmatch '&') { $serial = $instance }
         $name = Text $d.Name
-        if ($serial -and $storage.ContainsKey($serial.ToUpper())) { $name = $storage[$serial.ToUpper()] }
-        $class = ''
         $pnpClass = ''
         try { $pnpClass = Text $d.PNPClass } catch {}
-        if ($services.ContainsKey($service)) { $class = $services[$service] }
-        elseif ($pnpClass -and $classes.ContainsKey($pnpClass)) { $class = $classes[$pnpClass] }
-        elseif ($pnpClass) { $class = $pnpClass }
-        else { $class = 'USB zarizeni' }
-        # evidujeme jen USB zarizeni pro ukladani dat (disky, flash); klavesnice, mysi apod. ne
-        if ($class -ne 'uloziste') { continue }
-        $vols = @()
-        if ($serial) {
-            if ($null -eq $volumes) { $volumes = Get-UsbVolumes }
-            if ($volumes.ContainsKey($serial.ToUpper())) { $vols = @($volumes[$serial.ToUpper()]) }
+        $kind = ''
+        if ($storSvc -contains $service -or $pnpClass -eq 'DiskDrive') { $kind = 'uloziste' }
+        elseif ($phoneSvc -contains $service -or $pnpClass -eq 'WPD' -or $name.ToLower() -match $phoneName) { $kind = 'telefon' }
+        if (-not $kind) { continue }
+        $serial = ''
+        if (-not $isMi -and $instance -notmatch '&') { $serial = $instance }
+        $cands += @{ id = $id.ToUpper(); vid = $usbVid.ToUpper(); pid = $usbPid.ToUpper(); mi = $isMi; serial = $serial; kind = $kind; name = $name; manufacturer = (Text $d.Manufacturer) }
+    }
+    # slozena zarizeni (MI_xx) se pocitaji jen kdyz neexistuje zaznam samotneho zarizeni; jeden kus na VID/PID a druh
+    $direct = @{}
+    foreach ($c in $cands) { if (-not $c.mi) { $direct[$c.vid + ':' + $c.pid + ':' + $c.kind] = $true } }
+    $keep = @(); $miSeen = @{}
+    foreach ($c in $cands) {
+        if (-not $c.mi) { $keep += $c; continue }
+        $k = $c.vid + ':' + $c.pid + ':' + $c.kind
+        if ($direct.ContainsKey($k) -or $miSeen.ContainsKey($k)) { continue }
+        $miSeen[$k] = $true
+        $keep += $c
+    }
+    # telefon: jeden zaznam na VID/PID
+    $final = @(); $phones = @{}
+    foreach ($c in $keep) {
+        if ($c.kind -eq 'telefon') {
+            $k = $c.vid + ':' + $c.pid
+            if ($phones.ContainsKey($k)) { continue }
+            $phones[$k] = $true
         }
-        $list += @{
-            pnp_id = $id.ToUpper(); name = $name; manufacturer = (Text $d.Manufacturer)
-            vid = $usbVid.ToUpper(); pid = $usbPid.ToUpper(); serial = $serial; class = $class; volumes = $vols
+        $final += $c
+    }
+    # uloziste: sparovat s disky podle serioveho cisla
+    foreach ($c in $final) {
+        if ($c.kind -ne 'uloziste') { continue }
+        $c.disks = @()
+        if ($c.serial) {
+            foreach ($dk in $disks) { if (-not $dk.used -and ($dk.serials -contains $c.serial.ToUpper())) { $c.disks += $dk; $dk.used = $true } }
         }
+    }
+    $unStor = @($final | Where-Object { $_.kind -eq 'uloziste' -and @($_.disks).Count -eq 0 })
+    $unDisk = @($disks | Where-Object { -not $_.used })
+    if ($unStor.Count -eq 1 -and $unDisk.Count -eq 1) { $unStor[0].disks = @($unDisk[0]); $unDisk[0].used = $true }
+    $list = @()
+    foreach ($c in $final) {
+        if ($c.kind -eq 'telefon') {
+            $list += @{ pnp_id = $c.id; name = $c.name; manufacturer = $c.manufacturer; vid = $c.vid; pid = $c.pid; serial = $c.serial
+                        class = 'telefon / prenosne zarizeni'; volumes = @(); media = $true }
+            continue
+        }
+        $vols = @(); $media = $false; $dname = $c.name
+        foreach ($dk in @($c.disks)) {
+            $vols += @($dk.vols)
+            if (@($dk.vols).Count -gt 0 -or $dk.size_gb -gt 0) { $media = $true }
+            if ($dk.name) { $dname = $dk.name }
+        }
+        if (-not $media) { continue }   # prazdna ctecka, dock nebo kabel bez uloziste
+        $list += @{ pnp_id = $c.id; name = $dname; manufacturer = $c.manufacturer; vid = $c.vid; pid = $c.pid; serial = $c.serial
+                    class = 'uloziste'; volumes = @($vols); media = $true }
+    }
+    # disky na USB, ke kterym se nenaslo zarizeni (napr. UASP): hlasi se samostatne
+    foreach ($dk in $disks) {
+        if ($dk.used) { continue }
+        if (-not (@($dk.vols).Count -gt 0 -or $dk.size_gb -gt 0)) { continue }
+        $sn = ''
+        if (@($dk.serials).Count -gt 0) { $sn = [string]$dk.serials[0] }
+        $key = $sn
+        if (-not $key) { $key = 'DISK' + $dk.index }
+        $list += @{ pnp_id = ('USBDISK\' + $key).ToUpper(); name = $dk.name; manufacturer = $dk.manufacturer; vid = ''; pid = ''; serial = $sn
+                    class = 'uloziste'; volumes = @($dk.vols); media = $true }
     }
     return ,$list
 }
 
 function Get-UsbSignature($List) {
-    return (($List | ForEach-Object { $_.pnp_id } | Sort-Object) -join '|')
+    # zmena = jiny seznam zarizeni nebo jina pismena svazku (karta vlozena do cteky)
+    return (($List | ForEach-Object { [string]$_.pnp_id + '=' + ((@($_.volumes) | ForEach-Object { $_.drive }) -join ',') } | Sort-Object) -join '|')
 }
 
 function Get-EdidInfo([byte[]]$E) {
@@ -990,13 +1043,14 @@ function Invoke-AgentUpdate($Reply, $Mutex) {
 function Update-UsbWatchers($Usb) {
     # pro kazdy pripojeny svazek jeden watcher; odpojene / vypnute se zrusi
     $wanted = @{}
-    if ($script:FilesEnabled) {
-        foreach ($u in @($Usb)) {
-            foreach ($v in @($u.volumes)) {
-                if ($v -and $v.drive) { $wanted[[string]$v.drive] = [string]$u.pnp_id }
-            }
+    $map = @{}
+    foreach ($u in @($Usb)) {
+        foreach ($v in @($u.volumes)) {
+            if ($v -and $v.drive) { $map[([string]$v.drive).ToUpper()] = [string]$u.pnp_id }
         }
     }
+    $script:DriveMap = $map
+    if ($script:FilesEnabled) { $wanted = $map }
     foreach ($drive in @($script:Watchers.Keys)) {
         if (-not $wanted.ContainsKey($drive)) {
             $w = $script:Watchers[$drive]
@@ -1045,7 +1099,54 @@ function Receive-UsbFileEvents {
                 $drive = $path.Substring(0, 2)
                 $pnp = ''
                 if ($script:Watchers.ContainsKey($drive)) { $pnp = $script:Watchers[$drive].pnp }
-                $script:FileBuf[$path] = @{ path = $path; size = [int64]$item.Length; action = $action; drive = $drive; pnp_id = $pnp }
+                $script:FileBuf[$path] = @{ key = $path; path = $path; size = [int64]$item.Length; action = $action; drive = $drive; pnp_id = $pnp; direction = 'na USB' }
+                $script:FileEvents++
+                $script:FileLast = [DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')
+            }
+        } catch {}
+    }
+}
+
+function Receive-UsbAudit {
+    # soubory Z USB: cteni souboru na vymennem disku z auditu Windows (udalost 4663, GPO "Audit Removable Storage")
+    if (-not $script:AuditEnabled -or $script:DriveMap.Count -eq 0) { return }
+    $since = $script:AuditLast.AddSeconds(-5)
+    $script:AuditLast = Get-Date
+    $evs = @()
+    try {
+        $evs = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4663; StartTime = $since } -MaxEvents 400 -ErrorAction Stop)
+        $script:AuditState = 'ok'
+    } catch {
+        if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $script:AuditState = 'ok'; return }
+        $script:AuditState = 'nelze cist Security log'
+        return
+    }
+    foreach ($e in $evs) {
+        try {
+            $x = [xml]$e.ToXml()
+            $f = @{}
+            foreach ($n in $x.Event.EventData.Data) { $f[[string]$n.Name] = [string]$n.'#text' }
+            $path = [string]$f['ObjectName']
+            if ($path.Length -lt 4 -or [string]$f['ObjectType'] -ne 'File') { continue }
+            $drive = $path.Substring(0, 2).ToUpper()
+            if (-not $script:DriveMap.ContainsKey($drive)) { continue }
+            if ($path -like '*System Volume Information*' -or $path -like '*$RECYCLE.BIN*') { continue }
+            $mask = 0
+            try { $mask = [Convert]::ToInt32(([string]$f['AccessMask']).Replace('0x', ''), 16) } catch {}
+            if (($mask -band 1) -eq 0) { continue }   # neni to cteni souboru
+            if (($mask -band 6) -ne 0) { continue }   # zapis hlida sledovani souboru; zde jen ciste cteni
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            if ($item -and $item.PSIsContainer) { continue }
+            $size = $null
+            if ($item) { $size = [int64]$item.Length }
+            $proc = ''
+            try { $proc = Split-Path -Leaf ([string]$f['ProcessName']) } catch {}
+            $who = ''
+            if ($f['SubjectUserName'] -and $f['SubjectUserName'] -notlike '*$') { $who = ([string]$f['SubjectDomainName'] + '\' + [string]$f['SubjectUserName']) }
+            $key = 'R|' + $path
+            if ($script:FileBuf.Count -lt 2000 -or $script:FileBuf.ContainsKey($key)) {
+                $script:FileBuf[$key] = @{ key = $key; path = $path; size = $size; action = 'cteni'; drive = $drive; pnp_id = [string]$script:DriveMap[$drive]; direction = 'z USB'; process = $proc; user = $who }
+                $script:AuditEvents++
             }
         } catch {}
     }
@@ -1057,13 +1158,14 @@ function Get-UsbFilePayload {
 }
 
 function Clear-SentFiles($Files) {
-    foreach ($f in @($Files)) { $script:FileBuf.Remove([string]$f.path) }
+    foreach ($f in @($Files)) { $script:FileBuf.Remove([string]$f.key) }
 }
 
 function Read-Reply($Reply) {
     # zapamatuje si nastaveni ze serveru (interval inventury, sledovani souboru USB)
     try { if ($Reply.inventory_hours) { $script:InventoryHours = [int]$Reply.inventory_hours } } catch {}
     try { $script:FilesEnabled = [bool]$Reply.usb_files } catch {}
+    try { $script:AuditEnabled = [bool]$Reply.usb_audit } catch {}
     $cmd = ''
     try { $cmd = [string]$Reply.cmd } catch {}
     if ($cmd -eq 'retry') {
@@ -1129,15 +1231,26 @@ function Watch-Loop {
             $changed = $true
         }
         try { Receive-UsbFileEvents } catch {}
+        try { Receive-UsbAudit } catch {}
         $beat = ((Get-Date) - $lastBeat).TotalMinutes -ge 5
         if ($changed -or $beat) {
             try {
                 $usb = Get-UsbList
+                # po pripojeni nemusi mit svazek hned pismeno disku - par kratkych opakovani
+                if ($changed) {
+                    for ($try = 0; $try -lt 3; $try++) {
+                        $noLetter = @(@($usb) | Where-Object { $_.class -eq 'uloziste' -and @($_.volumes).Count -eq 0 }).Count
+                        if ($noLetter -eq 0) { break }
+                        Start-Sleep -Seconds 3
+                        $usb = Get-UsbList
+                    }
+                }
                 $sig = Get-UsbSignature $usb
                 $connected = (@($usb).Count -gt 0)
                 if (($sig -ne $usbSig) -or ($beat -and $connected)) {
                     # soubory zapsane pred odpojenim se odeslou jeste pred zrusenim watcheru
                     try { Receive-UsbFileEvents } catch {}
+                    try { Receive-UsbAudit } catch {}
                     $payload = @{ hostname = $env:COMPUTERNAME; user = (Get-LoggedUser); agent_version = $AgentVersion; usb = $usb; info = (Get-AgentInfo) }
                     $files = @(Get-UsbFilePayload)
                     if ($files.Count -gt 0) { $payload.files = $files }

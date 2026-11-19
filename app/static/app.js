@@ -98,10 +98,15 @@ async function api(method, url, body, raw) {
   return raw ? r : r.json();
 }
 
-function toast(text, kind) {
+function toast(text, kind, sticky) {
   const t = el('div', { class: 'toast ' + (kind || '') }, text);
+  if (sticky) {
+    // varovani zustane na obrazovce, dokud ho nekdo nezavre
+    t.classList.add('sticky');
+    t.append(el('button', { class: 'toast-close', title: T('Zavřít'), onclick: () => t.remove() }, '×'));
+  }
   document.getElementById('toasts').append(t);
-  setTimeout(() => t.remove(), kind === 'error' ? 7000 : 4500);
+  if (!sticky) setTimeout(() => t.remove(), kind === 'error' ? 7000 : 4500);
 }
 const fail = (e) => toast(e.message || String(e), 'error');
 
@@ -194,7 +199,17 @@ function groupTag(name, color) {
 
 const AGENT_DOT = { 'odesílá': 'on', 'neaktivní': 'warn', 'nikdy': 'bad' };
 const VER_BADGE = { 'aktuální': 'ok', 'zastaralý': 'warn', 'neznámá': 'bad', 'novější': '' };
-const HEALTH_DOT = { 'v pořádku': 'on', 'varování': 'warn', 'chyba': 'bad' };
+const HEALTH_DOT = { 'v pořádku': 'on', 'varování': 'warn', 'chyba': 'bad', 'bez agenta': '' };
+
+// doba v minutach jako "5 min", "3 h 20 min", "5 d 2 h"
+function fmtMinutes(m) {
+  m = Math.round(Number(m));
+  if (!isFinite(m) || m < 0) return '';
+  if (m < 60) return m + ' min';
+  if (m < 1440) return Math.floor(m / 60) + ' h' + (m % 60 ? ' ' + (m % 60) + ' min' : '');
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60);
+  return d + ' d' + (h ? ' ' + h + ' h' : '');
+}
 
 const verGe = (v, min) => {
   const a = String(v || '').split('.').map((x) => parseInt(x, 10) || 0);
@@ -211,12 +226,21 @@ async function sendAgentCmd(ids, cmd) {
 }
 
 // okno s duvodem chyby/varovani agenta a akcemi (zkusit znovu / znovu spojit)
+function errorHistory(list) {
+  if (!list.length) return el('div', { class: 'muted' }, 'Agent zatím nehlásil žádnou chybu.');
+  return el('table', { class: 'plain' }, el('thead', null, el('tr', null, ['Den', 'Chyba', 'Poprvé', 'Naposledy', 'Počet'].map((h) => el('th', null, h)))),
+    el('tbody', null, list.map((e) => el('tr', null, el('td', { class: 'nw' }, e.day), el('td', null, e.msg), el('td', { class: 'nw' }, fmtDate(e.first_ts)),
+      el('td', { class: 'nw' }, fmtDate(e.last_ts)), el('td', { class: 'num' }, e.count)))));
+}
+
 function agentIssueDialog(row, health) {
   const id = row._device_id || row._id;
   const supports = verGe(row._agent, AGENT_CMD_MIN);
   const reasons = String(row._hreason || '').split('; ').filter(Boolean);
   const last = (row._beat && row._beat > (row._inv || '')) ? row._beat : row._inv;
   const kv = (pairs) => el('dl', { class: 'kv' }, pairs.filter((p) => p[1] != null && p[1] !== '').map(([k, v]) => [el('dt', null, k), el('dd', null, v)]));
+  const histBox = el('div', { class: 'muted' }, 'Načítám…');
+  if (isAdmin()) api('GET', '/api/devices/' + id).then((d) => histBox.replaceChildren(errorHistory(d.agent_errors || []))).catch(() => histBox.replaceChildren('Historii se nepodařilo načíst'));
   const body = el('div', null,
     kv([['Počítač', row.hostname || row._host], ['Stav', el('span', null, el('span', { class: 'dot ' + (HEALTH_DOT[health] || '') }), health)],
       ['Komunikace', row._comm], ['Poslední kontakt', last ? ago(last) + ' (' + fmtDate(last) + ')' : 'nikdy'],
@@ -224,6 +248,8 @@ function agentIssueDialog(row, health) {
     reasons.length ? el('h3', null, 'Důvod') : null,
     reasons.length ? el('ul', null, reasons.map((r) => el('li', null, r))) : null,
     row._commr ? el('div', { class: 'note-box info' }, row._commr) : null,
+    isAdmin() ? el('h3', null, 'Historie chyb (uchovaná)') : null,
+    isAdmin() ? histBox : null,
     isAdmin() ? el('h3', null, 'Co můžete udělat') : null,
     isAdmin() ? el('ul', null,
       el('li', null, el('strong', null, 'Zkusit znovu'), ' – agent při nejbližším kontaktu (do 5 minut) hned pošle inventuru.'),
@@ -296,7 +322,12 @@ function cell(col, row) {
   }
   const nw = col.type === 'date' || ['hostname', 'ip', 'device_ip', 'mac', 'serial', 'online'].includes(col.key);
   const td = el('td', { class: col.type === 'num' ? 'num' : (nw ? 'nw' : '') });
-  if (col.key === 'online') return add(td, [el('span', { class: 'dot' + (v ? ' on' : '') }), v ? 'online' : 'offline']);
+  if (col.key === 'online') {
+    const off = !v && row._offmin != null ? fmtMinutes(row._offmin) : '';
+    return add(td, [el('span', { class: 'dot' + (v ? ' on' : '') }), v ? 'online' : 'offline',
+      off ? el('span', { class: 'small muted' }, ' · ' + off) : null]);
+  }
+  if (col.key === 'offline_min') return add(el('td', { class: 'nw' }), [v == null ? el('span', { class: 'muted' }, '–') : fmtMinutes(v)]);
   if (col.type === 'bool') return add(td, [el('span', { class: 'badge' + (v ? ' ok' : '') }, v ? 'ano' : 'ne')]);
   if (v == null || v === '') return td;
   if (col.key === 'action') return add(td, [el('span', { class: 'badge ' + (ACTION_BADGE[v] || '') }, v)]);
@@ -777,11 +808,22 @@ PAGES.prehled = async (main) => {
     main.append(el('div', { class: 'note-box' }, el('strong', null, 'Cílová verze agentů: '), d.agent_versions.target + ' (nejnovější je ' + d.agent_versions.latest + '). ',
       el('a', { href: '#/nastaveni' }, 'Nastavení'), ' → Agent: verze a aktualizace.'));
   }
+  if (d.usb_alerts && d.usb_alerts.length) {
+    main.append(el('div', { class: 'note-box usb-alert' },
+      el('div', { class: 'row' }, el('strong', null, '⚠ USB varování: '), el('span', null, d.usb_alerts_total + ' nepřevzatých (připojené úložiště nebo telefon)'),
+        el('button', { class: 'right', onclick: async () => { try { await api('POST', '/api/usb/ack', { all: true }); route(); } catch (e) { fail(e); } } }, 'Převzít vše')),
+      el('ul', { class: 'feed' }, d.usb_alerts.slice(0, 8).map((e) => el('li', null,
+        el('time', null, fmtDate(e.ts)), el('span', { class: 'badge warn' }, e.class),
+        el('strong', null, e.name || 'USB zařízení'), e.label ? el('span', { class: 'muted' }, e.label + (e.drive ? ' (' + e.drive + ')' : '')) : null,
+        el('a', { class: 'right', href: '#/zarizeni/' + e.device_id }, e.hostname), e.user ? el('span', { class: 'muted' }, e.user) : null,
+        el('button', { class: 'small', onclick: async () => { try { await api('POST', '/api/usb/ack', { ids: [e.id] }); route(); } catch (x) { fail(x); } } }, 'Převzít')))),
+      d.usb_alerts_total > 8 ? el('a', { href: '#/usb' }, 'Zobrazit všechna (' + d.usb_alerts_total + ')') : null));
+  }
   if (d.agent_summary) {
     const a = d.agent_summary;
     main.append(el('a', { class: 'note-box info', href: '#/zarizeni', style: 'display:block;color:inherit;text-decoration:none' },
       el('strong', null, 'Agenti: '), a.cur + ' s aktuální verzí, ', el('strong', null, String(a.old)), ' zastaralých' + (a.newer ? ', ' + a.newer + ' novějších' : '') + '. ',
-      'Zdraví: ' + a.h_ok + ' v pořádku, ' + a.h_warn + ' varování, ' + a.h_bad + ' s chybou' + (a.never ? ' (' + a.never + ' bez dat)' : '') + '.'));
+      'Zdraví: ' + a.h_ok + ' v pořádku, ' + a.h_warn + ' varování, ' + a.h_bad + ' s chybou' + (a.h_noagent ? ', ' + a.h_noagent + ' počítačů bez agenta' : '') + '.'));
   }
   if (d.ip_conflicts) {
     main.append(el('div', { class: 'note-box' }, el('strong', null, '⚠ Konflikt IP adres: '),
@@ -824,6 +866,7 @@ PAGES.prehled = async (main) => {
         el('span', { class: 'badge ' + (j.status === 'ok' ? 'ok' : (j.status === 'chyba' ? 'bad' : 'warn')) }, j.status === 'running' ? 'běží' : j.status),
         el('span', null, j.summary || j.kind)))) : el('div', { class: 'muted' }, 'Zatím neproběhla žádná úloha'))));
   S.live = (ev) => {
+    if (ev.type === 'usb_ack' || (ev.type === 'usb' && ev.alert)) { route(); return; }
     if (ev.type !== 'usb') return;
     emptyFeed.remove();
     feed.prepend(usbFeedItem(ev, true));
@@ -910,6 +953,8 @@ PAGES.zarizeni = async (main, parts, params) => {
     ['Vše', [], ALL_COLS, 'hostname'],
   ];
   const FLAGS = [
+    ['online', 'Online', 'online', { col: 'online', op: 'eq', value: 'ano', tab: true }],
+    ['offline', 'Offline', 'offline', { col: 'online', op: 'eq', value: 'ne', tab: true }],
     ['never', 'Bez agenta', 'never', { col: 'agent_state', op: 'eq', value: 'nikdy', tab: true }],
     ['stale', 'Neaktivní agent', 'stale', { col: 'agent_state', op: 'eq', value: 'neaktivní', tab: true }],
     ['ipc', 'Konflikt IP', 'ip_conflicts', { col: 'ip_conflict', op: 'eq', value: 'ano', tab: true }],
@@ -948,10 +993,16 @@ PAGES.zarizeni = async (main, parts, params) => {
     const n = el('span', { class: 'count' });
     flagCounts[ck] = n;
     const b = el('button', { class: 'flag', 'aria-pressed': 'false', onclick: () => {
-      if (flags.has(key)) flags.delete(key); else flags.add(key);
-      b.classList.toggle('on', flags.has(key)); b.setAttribute('aria-pressed', flags.has(key) ? 'true' : 'false');
+      if (flags.has(key)) flags.delete(key); else {
+        flags.add(key);
+        // online a offline se vzajemne vylucuji
+        const other = key === 'online' ? 'offline' : (key === 'offline' ? 'online' : '');
+        if (other) flags.delete(other);
+      }
+      flagButtons.forEach((x) => { const on = flags.has(x.dataset.flag); x.classList.toggle('on', on); x.setAttribute('aria-pressed', on ? 'true' : 'false'); });
       applyView();
     } }, label, ' ', n);
+    b.dataset.flag = key;
     return b;
   });
   const groupSel = el('select', { 'aria-label': 'Skupina', onchange: () => { curGroup = groupSel.value; applyView(); } });
@@ -973,6 +1024,7 @@ PAGES.zarizeni = async (main, parts, params) => {
     try {
       const c = await api('GET', '/api/devices-summary');
       TABS.forEach((tab) => { counts[tab[0]].textContent = tab[0] === 'Vše' ? c.total : c.sections[tab[0]]; });
+      flagCounts.online.textContent = c.online; flagCounts.offline.textContent = c.offline;
       flagCounts.never.textContent = c.never; flagCounts.stale.textContent = c.stale; flagCounts.no_section.textContent = c.no_section;
       flagCounts.ip_conflicts.textContent = c.ip_conflicts;
       flagCounts.old.textContent = c.old; flagCounts.h_bad.textContent = c.h_bad; flagCounts.h_warn.textContent = c.h_warn; flagCounts.pinned.textContent = c.pinned;
@@ -1087,11 +1139,20 @@ PAGES.monitory = async (main) => {
 };
 
 PAGES.usb = async (main) => {
-  pageHead(main, 'USB zařízení', 'Evidují se jen úložná zařízení (disky, flash). Události přicházejí z agentů během několika sekund po připojení nebo odpojení');
+  pageHead(main, 'USB zařízení', 'Hlídá se připojení úložišť s médiem (disky, flash, karty) a telefonů. Myš, klávesnice a dongle se neevidují. Události přicházejí z agentů během několika sekund');
   let current = null;
   const openDevice = (r) => { if (r._device_id) location.hash = '#/zarizeni/' + r._device_id; };
   const cfg = await api('GET', '/api/settings');
   tabbed(main, [
+    ['varovani', 'Varování', (box) => {
+      box.append(el('div', { class: 'row' }, el('span', { class: 'hint' }, 'Připojené úložiště nebo telefon, které ještě nikdo nepřevzal.'),
+        el('button', { class: 'right', onclick: async () => { try { await api('POST', '/api/usb/ack', { all: true }); toast('Varování převzata', 'ok'); route(); } catch (e) { fail(e); } } }, 'Převzít vše')));
+      current = evidencePage(box, { entity: 'usb_events', sort: 'ts', sortDir: 'desc',
+        columns: ['ts', 'class', 'name', 'label', 'serial', 'hostname', 'event_user', 'action'],
+        tabs: [{ label: 'Nepřevzatá', filters: [{ col: 'alert', op: 'eq', value: 'ano', tab: true }] },
+          { label: 'Všechna varování', filters: [{ col: 'action', op: 'in', value: 'připojeno,nalezeno', tab: true }, { col: 'class', op: 'in', value: 'úložiště,telefon / přenosné zařízení', tab: true }] }],
+        table: { onRow: openDevice, emptyText: 'Žádná nepřevzatá varování' } });
+    }],
     ['pripojena', 'Právě připojená', (box) => { current = evidencePage(box, { entity: 'usb_current', sort: 'connected_at', sortDir: 'desc',
       tabs: [{ label: 'Vše', filters: [] }],
       flags: [{ key: 'd1', label: 'Připojeno do 24 h', filter: { col: 'connected_at', op: 'newer_h', value: '24' } },
@@ -1109,16 +1170,20 @@ PAGES.usb = async (main) => {
       table: { onRow: openDevice, bulk: [bulkDelete('usb_events', 'událostí')] } }); }],
     ['soubory', 'Soubory na USB', (box) => {
       box.append(cfg.usb_files_enabled === '1'
-        ? el('div', { class: 'hint' }, 'Zobrazují se soubory zapsané na USB úložiště (název, velikost, čas). Uchování: ' + cfg.usb_files_days + ' dní.')
+        ? el('div', { class: 'hint' }, 'Zobrazují se soubory zapsané na USB (směr „na USB“)' + (cfg.usb_audit_enabled === '1'
+          ? ' i soubory čtené z USB (směr „z USB“, z auditu Windows – vyžaduje GPO, návod na stránce Agent).'
+          : '. Soubory čtené z USB se sledují jen po zapnutí auditu v Nastavení (karta Agent) a GPO.') + ' Uchování: ' + cfg.usb_files_days + ' dní.')
         : el('div', { class: 'note-box info' }, 'Sledování souborů na USB je vypnuté. Zapnete ho v ', el('a', { href: '#/nastaveni' }, 'Nastavení'),
           ' (karta Agent). Před zapnutím zajistěte směrnici o monitoringu zaměstnanců.'));
       evidencePage(box, { entity: 'usb_files', sort: 'ts', sortDir: 'desc', tabs: [{ label: 'Vše', filters: [] }],
-        flags: [{ key: 'd1', label: 'Posledních 24 h', filter: { col: 'ts', op: 'newer_h', value: '24' } },
+        flags: [{ key: 'to', label: 'Na USB', filter: { col: 'direction', op: 'eq', value: 'na USB' } },
+          { key: 'from', label: 'Z USB', filter: { col: 'direction', op: 'eq', value: 'z USB' } },
+          { key: 'd1', label: 'Posledních 24 h', filter: { col: 'ts', op: 'newer_h', value: '24' } },
           { key: 'big', label: 'Nad 100 MB', filter: { col: 'size_mb', op: 'gt', value: '100' } }],
         table: { onRow: openDevice, bulk: [bulkDelete('usb_files', 'záznamů')], emptyText: 'Zatím žádné záznamy' } });
     }],
   ]);
-  S.live = (ev) => { if (ev.type === 'usb' && current) current.reload(); };
+  S.live = (ev) => { if ((ev.type === 'usb' || ev.type === 'usb_ack') && current) current.reload(); };
 };
 
 // ------------------------------------------------------- detail zarizeni
@@ -1157,8 +1222,13 @@ async function agentTab(box, d, id) {
     el('div', { class: 'card' }, el('h3', null, 'Poslední chyba a provoz'), kvl([
       ['Poslední chyba', d.agent_error], ['Čas chyby (UTC)', d.agent_error_at], ['Běží s právy správce', yn(info.elevated)],
       ['Sledování USB', yn(info.usb_watch)], ['Sledování souborů na USB', yn(info.usb_files)],
+      ['Sledované disky USB', (info.watch_drives || []).join(', ') || (info.usb_files ? 'žádný (nic není připojeno, nebo se nepodařilo zjistit písmeno disku)' : '')],
+      ['Zachycené události souborů', info.file_events != null && info.usb_files ? info.file_events + (info.file_last ? ' · poslední ' + fmtDate(info.file_last) : '') : ''],
+      ['Čtení z USB (audit Windows)', info.usb_audit ? 'zapnuto · stav: ' + (info.audit_state || '–') + ' · zachyceno ' + (info.audit_events || 0) : ''],
       ['Neúplné části inventury', (info.partial || []).join(', ')], ['Délka inventury', info.inv_ms ? Math.round(info.inv_ms / 1000) + ' s' : ''],
-      ['Odchylka hodin', info.skew_s != null ? info.skew_s + ' s' : ''], ['PowerShell', info.ps]])));
+      ['Odchylka hodin', info.skew_s != null ? info.skew_s + ' s' : ''], ['PowerShell', info.ps]]),
+      el('h3', { style: 'margin-top:18px' }, 'Historie chyb (uchovaná)'),
+      errorHistory(d.agent_errors || [])));
 }
 
 async function deviceDetail(main, id, viewId) {
@@ -1595,6 +1665,16 @@ PAGES.agent = async (main, parts, params) => {
         el('li', null, 'Settings: Run task as soon as possible after a scheduled start is missed.'),
         el('li', null, 'Volitelně: Computer Configuration → Administrative Templates → System → Logon → Always wait for the network at computer startup and logon = Enabled.')),
       el('p', { class: 'muted' }, 'Agenti se pak sami udržují aktuální (do 5 minut od vydání nové verze), restart není potřeba.')),
+    el('div', { class: 'card' }, el('h2', null, 'Sledování souborů na USB (GPO audit)'),
+      el('p', null, 'Soubory zapsané NA USB agent zachytí sám. Soubory zkopírované Z USB na počítač zjistí jen z auditu Windows, který se zapíná v GPO. Bez něj se směr „z USB“ nezaznamenává.'),
+      el('ol', null,
+        el('li', null, 'Group Policy Management: upravte GPO připojené na OU s počítači (stejné jako u agenta).'),
+        el('li', null, 'Computer Configuration → Policies → Windows Settings → Security Settings → Advanced Audit Policy Configuration → Audit Policies → Object Access.'),
+        el('li', null, 'Otevřete Audit Removable Storage (v české Windows „Auditovat vyměnitelné úložiště“, název se může lišit), zaškrtněte Configure the following audit events a Success.'),
+        el('li', null, 'Doporučeno: Computer Configuration → … → Security Settings → Local Policies → Security Options → Audit: Force audit policy subcategory settings = Enabled.'),
+        el('li', null, 'Zvyšte velikost Security logu (Event Log → Security → Maximum log size, např. 256 MB), aby se události nepřepisovaly.'),
+        el('li', null, 'V Nastavení → Agent zapněte „Sledování souborů“ a „Sledovat i soubory čtené Z USB“. Na PC pak vyvolejte gpupdate /force (nebo počkejte na obnovení GPO).')),
+      el('p', { class: 'muted' }, 'Kontrola: na PC spusťte auditpol /get /category:"Object Access" – u Removable Storage musí být Success. U zařízení → záložka Agent uvidíte „Čtení z USB (audit Windows): zapnuto“ a počet zachycených událostí. Před zapnutím zajistěte směrnici o monitoringu (§ 316 zákoníku práce).')),
     el('div', { class: 'card' }, el('h2', null, 'Test – co jde na počítači zjistit'),
       el('p', null, 'Nic neodesílá ani neinstaluje. Jen na obrazovku vypíše, které údaje se podařilo zjistit.'), cmd(a.test)),
     el('div', { class: 'card' }, el('h2', null, 'Jednorázová inventura'),
@@ -1689,8 +1769,10 @@ PAGES.nastaveni = async (main) => {
     el('div', { class: 'card' }, el('h2', null, 'Agent: verze a aktualizace'), agentVersionsBox, 
       el('h3', { style: 'margin-top:18px' }, 'Sledování souborů zapsaných na USB'),
       check('usb_files_enabled', 'Zapnout (agenti hlásí názvy a velikosti souborů zapsaných na USB úložiště)'),
+      check('usb_audit_enabled', 'Sledovat i soubory čtené Z USB (audit Windows – vyžaduje GPO, návod je na stránce Agent)'),
       el('div', { class: 'form-grid' }, text('usb_files_days', 'Uchovávat záznamy souborů (dní)', null, 'number'),
-        text('agent_problems_days', 'Uchovávat problémy agentů (dní)', null, 'number')),
+        text('agent_problems_days', 'Uchovávat problémy agentů (dní)', null, 'number'),
+        text('agent_error_days', 'Chyba agenta se z varování mění na „chybu“ po (dnech opakování)', null, 'number')),
       el('div', { class: 'hint' }, 'Sledování zapisuje jména souborů zaměstnanců. Před zapnutím zajistěte vnitřní směrnici o monitoringu a informování zaměstnanců (§ 316 zákoníku práce). Výchozí stav je vypnuto.')),
     el('div', { class: 'card' }, el('h2', null, 'Active Directory'),
       check('ad_enabled', 'Pravidelně synchronizovat počítače a uživatele z domény'),
@@ -1776,7 +1858,10 @@ function connectEvents() {
   S.es = new EventSource('/api/events');
   S.es.onmessage = (m) => {
     let ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
-    if (ev.type === 'usb' && isAdmin() && ev.name) toast(ev.hostname + ': ' + ev.action + ' – ' + ev.name);
+    if (ev.type === 'usb' && isAdmin() && ev.name) {
+      if (ev.alert) toast('⚠ ' + ev.hostname + ': ' + ev.action + ' ' + ev.class + ' – ' + ev.name + (ev.user ? ' (' + ev.user + ')' : ''), 'warn', true);
+      else toast(ev.hostname + ': ' + ev.action + ' – ' + ev.name);
+    }
     if (S.live) { try { S.live(ev); } catch (e) { /* stranka se mezitim zmenila */ } }
   };
 }
