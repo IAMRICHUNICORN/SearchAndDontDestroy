@@ -115,8 +115,9 @@ _TRANS = ("(d.agent_error LIKE '%nelze připojit%' OR d.agent_error LIKE '%Unabl
           "OR d.agent_error LIKE '%No connection could be made%' OR d.agent_error LIKE '%Nebylo možné navázat%')")
 _BEAT_OK = "COALESCE(d.agent_beat, '') >= datetime('now', '-30 minutes')"
 _LC = "MAX(COALESCE(d.agent_beat, ''), COALESCE(d.last_inventory, ''))"
-# aktualni chyba agenta (mladsi nez 24 h; prechodna chyba spojeni s agentem, ktery se znovu ozval, se nepocita)
-_ERR_CUR = ("(COALESCE(d.agent_error, '') <> '' AND d.agent_error_at >= datetime('now', '-24 hours') "
+# aktualni chyba agenta: agent se o ni hlasi stale (posledni vyskyt mladsi nez 30 min; trvala chyba se opakuje kazdych 5 min).
+# Starsi chyba = opraveno (stav v poradku; zustava jen v historii chyb). Prechodna chyba spojeni s agentem, ktery se znovu ozval, se nepocita.
+_ERR_CUR = ("(COALESCE(d.agent_error, '') <> '' AND d.agent_error_at >= datetime('now', '-30 minutes') "
             "AND (%(trans)s = 0 OR NOT %(beat)s))" % {"trans": _TRANS, "beat": _BEAT_OK})
 # kolik z poslednich __ERRD__ dnu (vcetne dneska) se u zarizeni objevila chyba agenta
 _ERR_DAYS = ("(SELECT COUNT(DISTINCT l.day) FROM agent_error_log l WHERE l.device_id = d.id "
@@ -140,8 +141,6 @@ _HEALTH_WARN = (
     "CASE WHEN %(vs)s = 'zastaralý' THEN 'zastaralá verze agenta; ' WHEN %(vs)s = 'neznámá' THEN 'neznámá verze agenta; ' ELSE '' END || "
     "CASE WHEN COALESCE(d.last_inventory, '') <> '' AND COALESCE(d.agent_beat, '') >= datetime('now', '-30 minutes') "
     "AND d.last_inventory < datetime('now', '-__INVH__ hours') THEN 'stará inventura (agent žije); ' ELSE '' END || "
-    "CASE WHEN COALESCE(d.agent_error, '') <> '' AND %(trans)s AND %(beat)s AND d.agent_error_at >= datetime('now', '-2 hours') "
-    "THEN 'přechodná chyba spojení se serverem (agent se znovu spojil); ' ELSE '' END || "
     "CASE WHEN json_extract(d.agent_info, '$.upd_state') = 'vraceno' "
     "THEN 'aktualizace agenta na ' || COALESCE(json_extract(d.agent_info, '$.upd_target'), '?') || ' selhala (vráceno); ' ELSE '' END || "
     "CASE WHEN %(skew)s > 300 THEN 'odchylka hodin oproti serveru; ' ELSE '' END || "

@@ -1224,7 +1224,9 @@ async function agentTab(box, d, id) {
       } }, 'Uložit')),
       el('div', { class: 'hint' }, 'Připnutí platí jen pro agenty od verze 2.0.0. Starší agent následuje globální cíl.')),
     el('div', { class: 'card' }, el('h3', null, 'Poslední chyba a provoz'), kvl([
-      ['Poslední chyba', d.agent_error], ['Čas chyby (UTC)', d.agent_error_at], ['Běží s právy správce', yn(info.elevated)],
+      ['Poslední chyba', d.agent_error], ['Čas chyby (UTC)', d.agent_error_at],
+      ['Stav chyby', d.agent_error ? ((Date.now() - Date.parse(String(d.agent_error_at).replace(' ', 'T') + 'Z')) / 60000 > 30
+        ? 'opraveno (agent se už o chybě nehlásí; zůstává jen v historii)' : 'trvá (agent se o ní stále hlásí)') : ''], ['Běží s právy správce', yn(info.elevated)],
       ['Sledování USB', yn(info.usb_watch)], ['Sledování souborů na USB', yn(info.usb_files)],
       ['Sledované disky USB', (info.watch_drives || []).join(', ') || (info.usb_files ? 'žádný (nic není připojeno, nebo se nepodařilo zjistit písmeno disku)' : '')],
       ['Zachycené události souborů', info.file_events != null && info.usb_files ? info.file_events + (info.file_last ? ' · poslední ' + fmtDate(info.file_last) : '') : ''],

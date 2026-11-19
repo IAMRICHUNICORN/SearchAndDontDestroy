@@ -1,6 +1,9 @@
 /* HWSW Monitor - anglicky preklad rozhrani (cesky text -> anglicky). Generovano; data, cisla a datum zustavaji ceske. */
 window.HWSW_EN = {
   dict: {
+"Stav chyby": "Error state",
+"opraveno (agent se už o chybě nehlásí; zůstává jen v historii)": "fixed (the agent no longer reports it; kept only in the history)",
+"trvá (agent se o ní stále hlásí)": "ongoing (the agent keeps reporting it)",
 "Kdy: ": "When: ",
 "Kdo: ": "Who: ",
 "Kde: ": "Where: ",

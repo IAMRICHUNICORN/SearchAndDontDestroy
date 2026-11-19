@@ -2,6 +2,13 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.10.1
+- **Změny SW od nuly:** při aktualizaci se jednorázově vymaže historie změn softwaru (obsahovala falešné „instalace“ po změně zdrojů dat agenta; schéma 11,
+  před aktualizací se dělá záloha). Seznam nainstalovaného softwaru u PC se nemění.
+- **Opravený agent je „v pořádku“:** chyba agenta se počítá, jen když se o ní agent stále hlásí (poslední výskyt mladší než 30 minut). Starší chyba znamená opraveno a zůstává jen v historii chyb (u zařízení → Agent je řádek „Stav chyby“). „Chyba“ (červeně) je jen trvalá chyba, která se opakuje 3 dny a déle. Zrušeno varování „přechodná chyba spojení“.
+- **Pravidlo „stav 0“:** první inventura po změně verze agenta (a první inventura nového PC) je jen výchozí stav a změny se nezapisují. Dál se zapisuje jen
+  skutečná instalace a odinstalace.
+
 ## 1.10.0
 - **Agent 2.3.0** (cíl „Nejnovější“ ho rozešle do 5 minut od aktualizace serveru; chcete-li ho nejdřív vyzkoušet, nastavte cíl 2.2.0 a 2.3.0 připněte jednomu PC).
 - **Software do hodiny:** výchozí interval úplné inventury je 1 h (dřív 6 h). Hodnota 6 se při aktualizaci sama změní na 1 (schéma 9), ručně nastavená jiná zůstává.

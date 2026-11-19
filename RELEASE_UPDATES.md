@@ -7,6 +7,11 @@ Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CH
 
 (zatim nic)
 
+## Hotovo (vydano) ve verzi 1.10.1 ( bez noveho agenta, schema 11)
+1. Zmeny SW od nuly: migrace smaze historii sw_changes; "stav 0" - prvni inventura po zmene verze agenta/noveho PC zmeny nezapisuje. ODSOUHLASENO ("po nasazeni smaz").
+2. Stav agenta: opraveny agent = "v poradku": chyba je aktualni jen kdyz se agent o ni hlasi (posledni vyskyt < 30 min), starsi = opraveno, jen historie;
+   "chyba" jen trvala aktualni chyba >= 3 dny; zruseno varovani "prechodna chyba spojeni"; radek "Stav chyby" u zarizeni. ODSOUHLASENO ("implementuj").
+
 ## Hotovo (vydano) ve verzi 1.10.0 ( agent 2.3.0, schema 10)
 1. [A1] Zmeny softwaru do hodiny: interval inventury 1 h, migrace prepise 6 -> 1 (schema 9).
 2. [B1-B3] Software v profilech (i odhlasene profily pres NTUSER.DAT, slozky AppData\Local\Programs); sloupce Zdroj instalace a Profil (schema 10).

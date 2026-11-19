@@ -340,6 +340,11 @@ MIGRATIONS = [
         "ALTER TABLE software ADD COLUMN source TEXT DEFAULT ''",
         "ALTER TABLE software ADD COLUMN profile TEXT DEFAULT ''",
     ],
+    # 11: "stav 0" - vymaze se historie zmen softwaru (obsahovala falesne instalace pri zmene zdroju dat agenta);
+    # od ted se zapisuje jen skutecna instalace a odinstalace
+    [
+        "DELETE FROM sw_changes",
+    ],
 ]
 
 

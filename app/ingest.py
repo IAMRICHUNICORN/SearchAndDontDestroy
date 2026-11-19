@@ -433,6 +433,9 @@ def ingest_inventory(conn, payload):
     details = {k: payload.get(k) for k in
                ("system", "os", "cpu", "ram_modules", "disks", "volumes", "gpus", "nics", "printers",
                 "security", "licenses", "accounts", "network", "remote")}
+    # verze agenta, ktera tuto inventuru poslala: pri jeji zmene se zmeny softwaru nezapisuji (novy agent cte jine zdroje)
+    inv_agent = s(payload.get("agent_version"), 20) or "?"
+    details["inv_agent"] = inv_agent
     details_json = json.dumps(details, ensure_ascii=False)[:400000]
 
     device = find_device(conn, hostname, mac)
@@ -441,6 +444,12 @@ def ingest_inventory(conn, payload):
                            (hostname, ts, "agent"))
         device = conn.execute("SELECT * FROM devices WHERE id = ?", (cur.lastrowid,)).fetchone()
     had_inventory = bool(device["last_inventory"])
+    try:
+        prev_agent = (json.loads(device["details"] or "{}") or {}).get("inv_agent")
+    except (ValueError, TypeError, AttributeError):
+        prev_agent = None
+    # "stav 0": prvni inventura po zmene verze agenta (nebo od agenta bez zaznamu verze) je jen vychozi stav
+    sw_track = had_inventory and prev_agent == inv_agent
     dev_type = _device_type(payload)
     # typ rucne zmeneny administratorem (napr. "pokladna") se neprepisuje
     auto_types = ("", "počítač", "notebook", "server", "virtuální server", "virtuální počítač",
@@ -462,7 +471,7 @@ def ingest_inventory(conn, payload):
     _track_login(conn, device["id"], user, ts, device["logged_user"], details.get("accounts"))
     store_agent_state(conn, device["id"], payload, ts)
     _sync_monitors(conn, device["id"], payload.get("monitors"))
-    _sync_software(conn, device["id"], payload.get("software"), had_inventory)
+    _sync_software(conn, device["id"], payload.get("software"), sw_track)
     events = []
     if isinstance(payload.get("usb"), list):
         events = sync_usb(conn, device, payload.get("usb"), user)
