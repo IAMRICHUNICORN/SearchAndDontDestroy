@@ -93,6 +93,11 @@ def _ver_key(col):
             % (col, ", ".join(parts)))
 
 
+# zastarala verze SW: stejny program ma jinde v evidenci vyssi verzi (porovnani prvnich tri cisel verze)
+_SW_KEY = "(%s || '.0.0')"
+_SW_OUTDATED = ("(" + _ver_key(_SW_KEY % "s.version") + " <> '' AND " + _ver_key(_SW_KEY % "s.version") + " < "
+                "(SELECT MAX(" + _ver_key(_SW_KEY % "s2.version") + ") FROM software s2 WHERE s2.name = s.name))")
+
 # cilova verze agenta pro PC: pripnuta u zarizeni, jinak globalni (__GTARGET__ se dosadi z Nastaveni)
 _AGENT_TARGET = "COALESCE(NULLIF(d.agent_target, ''), __GTARGET__)"
 _VER_STATUS = ("CASE WHEN COALESCE(d.agent_version, '') = '' THEN '' "
@@ -287,6 +292,46 @@ ENTITIES = {
                                "(SELECT COUNT(*) FROM software s WHERE s.device_id = d.id)", "num"),
             "usb_count": ("Připojená USB",
                           "(SELECT COUNT(*) FROM usb_current c WHERE c.device_id = d.id)", "num"),
+            "rdp": ("RDP zapnuto (vzdálená plocha)",
+                    "CASE WHEN json_extract(d.details, '$.remote.rdp') IS NULL THEN NULL "
+                    "WHEN json_extract(d.details, '$.remote.rdp') IN (1, 'true') THEN 1 ELSE 0 END", "bool"),
+            "winrm": ("Vzdálený PowerShell (WinRM)",
+                      "CASE WHEN json_extract(d.details, '$.remote.winrm') IS NULL THEN NULL "
+                      "WHEN json_extract(d.details, '$.remote.winrm') IN (1, 'true') THEN 1 ELSE 0 END", "bool"),
+            "os_age_days": ("Stáří instalace OS (dny)",
+                            "CASE WHEN COALESCE(json_extract(d.details, '$.os.install_date'), '') <> '' "
+                            "THEN CAST(julianday('now') - julianday(json_extract(d.details, '$.os.install_date')) AS INTEGER) END", "num"),
+            "monitor_age": ("Stáří nejstaršího monitoru (roky)",
+                            "(SELECT CAST(strftime('%Y', 'now') AS INTEGER) - MIN(m.year) FROM monitors m "
+                            "WHERE m.device_id = d.id AND m.connected = 1 AND COALESCE(m.year, 0) > 1990)", "num"),
+            "sw_removed_30d": ("Odinstalováno za 30 dní",
+                               "(SELECT COUNT(*) FROM sw_changes c WHERE c.device_id = d.id AND c.action = 'odebráno' "
+                               "AND c.ts >= datetime('now', '-30 days'))", "num"),
+            "sw_added_30d": ("Nainstalováno za 30 dní",
+                             "(SELECT COUNT(*) FROM sw_changes c WHERE c.device_id = d.id AND c.action = 'nainstalováno' "
+                             "AND c.ts >= datetime('now', '-30 days'))", "num"),
+            "sw_outdated": ("Software se zastaralou verzí (počet)", "(SELECT COUNT(*) FROM software s WHERE s.device_id = d.id AND " + _SW_OUTDATED + ")", "num"),
+            "gpu": ("Grafická karta", "(SELECT GROUP_CONCAT(json_extract(v.value, '$.name'), ', ') FROM json_each(d.details, '$.gpus') v)", "text"),
+            "gpu_vram": ("Paměť grafiky (MB)", "(SELECT MAX(json_extract(v.value, '$.vram_mb')) FROM json_each(d.details, '$.gpus') v)", "num"),
+            "cpu_cores": ("Jádra CPU", "(SELECT SUM(json_extract(v.value, '$.cores')) FROM json_each(d.details, '$.cpu') v)", "num"),
+            "cpu_threads": ("Vlákna CPU", "(SELECT SUM(json_extract(v.value, '$.threads')) FROM json_each(d.details, '$.cpu') v)", "num"),
+            "ram_slots": ("Obsazené sloty RAM", "json_array_length(json_extract(d.details, '$.ram_modules'))", "num"),
+            "ram_modules": ("Moduly RAM",
+                            "(SELECT GROUP_CONCAT((CAST(json_extract(v.value, '$.size_mb') / 1024 AS INTEGER)) || ' GB ' || "
+                            "COALESCE(json_extract(v.value, '$.slot'), ''), ', ') FROM json_each(d.details, '$.ram_modules') v)", "text"),
+            "gateway": ("Brána", "(SELECT GROUP_CONCAT(DISTINCT json_extract(v.value, '$.gateway')) FROM json_each(d.details, '$.nics') v "
+                        "WHERE COALESCE(json_extract(v.value, '$.gateway'), '') <> '')", "text"),
+            "dns": ("DNS servery", "(SELECT GROUP_CONCAT(DISTINCT json_extract(v.value, '$.dns')) FROM json_each(d.details, '$.nics') v "
+                    "WHERE COALESCE(json_extract(v.value, '$.dns'), '') <> '')", "text"),
+            "dhcp_server": ("DHCP server", "(SELECT GROUP_CONCAT(DISTINCT json_extract(v.value, '$.dhcp_server')) FROM json_each(d.details, '$.nics') v "
+                            "WHERE COALESCE(json_extract(v.value, '$.dhcp_server'), '') <> '')", "text"),
+            "printers_n": ("Počet tiskáren", "json_array_length(json_extract(d.details, '$.printers'))", "num"),
+            "printers": ("Tiskárny", "(SELECT GROUP_CONCAT(json_extract(v.value, '$.name'), ', ') FROM json_each(d.details, '$.printers') v)", "text"),
+            "local_accounts": ("Místní účty (povolené)",
+                               "(SELECT GROUP_CONCAT(json_extract(v.value, '$.name'), ', ') FROM json_each(d.details, '$.accounts.local') v "
+                               "WHERE COALESCE(json_extract(v.value, '$.disabled'), 0) IN (0, 'false'))", "text"),
+            "agent_problem_count": ("Problémy agenta (počet)",
+                                    "(SELECT COUNT(*) FROM agent_problems p WHERE p.hostname = d.hostname COLLATE NOCASE)", "num"),
             "fqdn": ("Plný název (FQDN)", "d.fqdn", "text"),
             "ad_enabled": ("Účet v AD povolen", "d.ad_enabled", "bool"),
             "source": ("Zdroj dat", "d.source", "text"),
@@ -337,6 +382,11 @@ ENTITIES = {
             "version": ("Verze", "x.version", "text"),
             "publisher": ("Vydavatel", "x.publisher", "text"),
             "install_date": ("Datum instalace", "x.install_date", "text"),
+            "source": ("Zdroj instalace", "x.source", "text"),
+            "profile": ("Profil (kde je nainstalován)", "x.profile", "text"),
+            "outdated": ("Zastaralá verze",
+                         "CASE WHEN " + _SW_OUTDATED.replace("s.version", "x.version").replace("s2.", "s2.").replace("s.name", "x.name")
+                         + " THEN 1 ELSE 0 END", "bool"),
         }, **_DEVICE_REF),
         "default": ["name", "version", "publisher", "hostname", "logged_user", "install_date"],
         "sort": ("name", "asc"),
@@ -417,6 +467,9 @@ ENTITIES = {
             "pid": ("PID", "x.pid", "text"),
             "serial": ("Sériové číslo USB", "x.serial", "text"),
             "event_user": ("Uživatel v čase události", "x.logged_user", "text"),
+            "event_user_name": ("Jméno uživatele v čase události",
+                                "(SELECT a.display_name FROM ad_users a WHERE a.sam = substr(x.logged_user, instr(x.logged_user, '\\') + 1) "
+                                "COLLATE NOCASE LIMIT 1)", "text"),
             "drive": ("Jednotka", "x.drive", "text"),
             "label": ("Název svazku", "x.label", "text"),
             "delta_mb": ("Změna obsazeného místa (MB)", "x.delta_mb", "num"),
@@ -840,6 +893,7 @@ def agent_summary(conn):
     out["pinned"] = int(conn.execute("SELECT COUNT(*) FROM devices WHERE COALESCE(agent_target, '') <> ''").fetchone()[0])
     orow = conn.execute("SELECT COALESCE(SUM(online = 1), 0) AS on_n, COALESCE(SUM(online = 0), 0) AS off_n FROM devices").fetchone()
     out["online"], out["offline"] = int(orow["on_n"]), int(orow["off_n"])
+    out["rdp"] = int(conn.execute("SELECT COUNT(*) FROM devices WHERE json_extract(details, '$.remote.rdp') IN (1, 'true')").fetchone()[0])
     return out
 
 

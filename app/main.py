@@ -227,7 +227,7 @@ def dashboard(user=Depends(active_user)):
             "agent_versions": ({"target": agentrel.global_target(db.get_settings(conn, decrypt=False)),
                                 "latest": agentrel.current_version()} if admin else None),
             "agent_summary": ({k: v for k, v in entities.agent_summary(conn).items()
-                               if k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad", "h_noagent", "never", "stale", "ok")}
+                               if k in ("cur", "old", "newer", "h_ok", "h_warn", "h_bad", "h_noagent", "never", "stale", "ok", "rdp")}
                               if admin else None),
             "by_type": [dict(r) for r in conn.execute(
                 "SELECT CASE WHEN device_type = '' THEN 'neznámé' ELSE device_type END AS label, COUNT(*) AS n "
@@ -260,6 +260,8 @@ def dashboard(user=Depends(active_user)):
                 "e.device_id FROM usb_events e JOIN devices d ON d.id = e.device_id ORDER BY e.id DESC LIMIT 15")]
             data["usb_alerts"] = [dict(r) for r in conn.execute(
                 "SELECT e.id, e.ts, e.action, e.name, e.class, e.label, e.drive, e.serial, e.logged_user AS user, d.hostname, "
+                "d.ip, d.location, (SELECT a.display_name FROM ad_users a WHERE a.sam = "
+                "substr(e.logged_user, instr(e.logged_user, '\\') + 1) COLLATE NOCASE LIMIT 1) AS user_name, "
                 "e.device_id FROM usb_events e JOIN devices d ON d.id = e.device_id WHERE " + entities.USB_ALERT_SQL.replace("x.", "e.")
                 + " AND COALESCE(e.ack_at, '') = '' ORDER BY e.id DESC LIMIT 50")]
             data["usb_alerts_total"] = one("SELECT COUNT(*) FROM usb_events e WHERE " + entities.USB_ALERT_SQL.replace("x.", "e.")
@@ -1013,6 +1015,7 @@ def _agent_reply(conn, request=None, hostname="", reported_version=""):
              "inventory_hours": int(cfg["agent_inventory_hours"] or 6),
              "target_version": target, "target_gen": int(cfg.get("agent_target_gen") or 1),
              "usb_files": cfg.get("usb_files_enabled") == "1",
+             "store_apps": cfg.get("agent_store_apps", "1") != "0",
              "usb_audit": cfg.get("usb_files_enabled") == "1" and cfg.get("usb_audit_enabled") == "1"}
     if hostname and not agentrel.is_legacy(reported_version):
         row = conn.execute("SELECT id, agent_cmd FROM devices WHERE hostname = ? ORDER BY id LIMIT 1", (hostname,)).fetchone()

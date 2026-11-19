@@ -33,13 +33,15 @@ USB_CLASSES = {
     "telefon / prenosne zarizeni": "telefon / přenosné zařízení", "seriovy port": "sériový port",
     "skener": "skener", "usb zarizeni": "USB zařízení", "klavesnice": "klávesnice", "mys": "myš",
     "kamera / skener": "kamera / skener", "sitovy adapter": "síťový adaptér", "ctecka karet": "čtečka karet",
-    "ctecka otisku": "čtečka otisků",
+    "ctecka otisku": "čtečka otisků", "neznama zarizeni": "neznámé zařízení",
 }
 
 
 USB_STORAGE = "úložiště"   # evidujeme jen USB zarizeni pro ukladani dat a telefony / prenosna zarizeni
 USB_PHONE = "telefon / přenosné zařízení"
 USB_ALERT_CLASSES = (USB_STORAGE, USB_PHONE)
+USB_UNKNOWN = "neznámé zařízení"   # jen informace v historii, bez varovani
+USB_KEEP_CLASSES = USB_ALERT_CLASSES + (USB_UNKNOWN,)
 
 
 def s(value, limit=255):
@@ -136,6 +138,15 @@ def _volume(u):
             "enc": "ano" if enc == {"ano"} else ("ne" if "ne" in enc else "")}
 
 
+def user_full_name(conn, user):
+    """Cele jmeno uzivatele z AD podle prihlasovaciho jmena (DOMENA\\jnovak nebo jnovak); prazdne, kdyz neni v AD."""
+    sam = s(user).split("\\")[-1].strip()
+    if not sam:
+        return ""
+    row = conn.execute("SELECT display_name FROM ad_users WHERE sam = ? COLLATE NOCASE LIMIT 1", (sam,)).fetchone()
+    return s(row["display_name"]) if row and row["display_name"] else ""
+
+
 def sync_usb(conn, device, usb_list, user):
     """Porovna hlasena USB uloziste se stavem v DB, zapise udalosti. Vraci nove udalosti.
     Evidujeme jen uloziste s mediem a telefony / prenosna zarizeni; ostatni tridy USB (mys, klavesnice, dongle...) se zahazuji.
@@ -147,7 +158,7 @@ def sync_usb(conn, device, usb_list, user):
             continue
         pnp = s(u.get("pnp_id"), 400).upper()
         cls = USB_CLASSES.get(s(u.get("class"), 80).lower(), s(u.get("class"), 80))
-        if not pnp or cls not in USB_ALERT_CLASSES:
+        if not pnp or cls not in USB_KEEP_CLASSES:
             continue
         if cls == USB_STORAGE and u.get("media") is False:
             continue
@@ -181,7 +192,7 @@ def sync_usb(conn, device, usb_list, user):
                      "serial, class, logged_user, drive, label) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (dev_id, ts, action, pnp) + vals + (s(user), vol["drive"] if vol else "",
                                                          vol["label"] if vol else ""))
-        events.append({"action": action, "name": vals[0], "class": vals[5], "serial": vals[4], "alert": True,
+        events.append({"action": action, "name": vals[0], "class": vals[5], "serial": vals[4], "alert": vals[5] in USB_ALERT_CLASSES,
                        "label": vol["label"] if vol else "", "drive": vol["drive"] if vol else ""})
     for pnp, r in current.items():
         if pnp in reported:
@@ -206,7 +217,8 @@ def sync_usb(conn, device, usb_list, user):
     if not baseline:
         conn.execute("UPDATE devices SET usb_baseline = 1 WHERE id = ?", (dev_id,))
     for e in events:
-        e.update({"ts": ts, "hostname": device["hostname"], "device_id": dev_id, "user": s(user)})
+        e.update({"ts": ts, "hostname": device["hostname"], "device_id": dev_id, "user": s(user),
+                  "user_name": user_full_name(conn, user), "ip": device["ip"] or "", "location": device["location"] or ""})
     return events
 
 
@@ -367,7 +379,17 @@ def _sync_software(conn, dev_id, software, had_inventory):
         if not name:
             continue
         version = s(item.get("version"), 80)
-        new[(name, version)] = (s(item.get("publisher")), s(item.get("install_date"), 20))
+        key = (name, version)
+        source = s(item.get("source"), 30)
+        profile = s(item.get("profile"), 120)
+        if key in new:
+            # stejny program ve vice profilech: profily se spoji
+            old_p = new[key][3]
+            if profile and profile not in old_p.split(", "):
+                profile = (old_p + ", " + profile) if old_p else profile
+            else:
+                profile = old_p
+        new[key] = (s(item.get("publisher")), s(item.get("install_date"), 20), source, profile)
     old = {(r["name"], r["version"]) for r in
            conn.execute("SELECT name, version FROM software WHERE device_id = ?", (dev_id,))}
     if had_inventory:
@@ -380,8 +402,8 @@ def _sync_software(conn, dev_id, software, had_inventory):
                          (dev_id, ts, "odebráno", name, version))
     conn.execute("DELETE FROM software WHERE device_id = ?", (dev_id,))
     conn.executemany(
-        "INSERT INTO software(device_id, name, version, publisher, install_date) VALUES(?,?,?,?,?)",
-        [(dev_id, k[0], k[1], v[0], v[1]) for k, v in sorted(new.items())])
+        "INSERT INTO software(device_id, name, version, publisher, install_date, source, profile) VALUES(?,?,?,?,?,?,?)",
+        [(dev_id, k[0], k[1], v[0], v[1], v[2], v[3]) for k, v in sorted(new.items())])
 
 
 def ingest_inventory(conn, payload):
@@ -410,7 +432,7 @@ def ingest_inventory(conn, payload):
 
     details = {k: payload.get(k) for k in
                ("system", "os", "cpu", "ram_modules", "disks", "volumes", "gpus", "nics", "printers",
-                "security", "licenses", "accounts", "network")}
+                "security", "licenses", "accounts", "network", "remote")}
     details_json = json.dumps(details, ensure_ascii=False)[:400000]
 
     device = find_device(conn, hostname, mac)

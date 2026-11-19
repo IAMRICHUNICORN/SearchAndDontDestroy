@@ -28,5 +28,11 @@
   "date": "2026-11-19",
   "legacy": false,
   "notes": "USB: hlásí se jen úložiště s médiem a telefony (myš, klávesnice, dongle, prázdná čtečka ne), správné zjištění písmene disku (UASP), soubory na i z USB (audit Windows), diagnostika sledování souborů."
+ },
+ {
+  "version": "2.3.0",
+  "date": "2026-11-19",
+  "legacy": false,
+  "notes": "Software: i programy instalované do profilu uživatele (včetně odhlášených profilů), aplikace z Microsoft Store a zdroj instalace; údaj o zapnuté vzdálené ploše a WinRM; neznámá USB zařízení jako informace."
  }
 ]

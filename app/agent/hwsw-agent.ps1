@@ -265,6 +265,12 @@ function Get-UsbList {
         $kind = ''
         if ($storSvc -contains $service -or $pnpClass -eq 'DiskDrive') { $kind = 'uloziste' }
         elseif ($phoneSvc -contains $service -or $pnpClass -eq 'WPD' -or $name.ToLower() -match $phoneName) { $kind = 'telefon' }
+        elseif ($name -match 'nezn.m|unknown usb|descriptor request failed|device descriptor') { $kind = 'neznamo' }
+        else {
+            $cm = 0
+            try { $cm = [int]$d.ConfigManagerErrorCode } catch {}
+            if ($cm -in 28, 43) { $kind = 'neznamo' }
+        }
         if (-not $kind) { continue }
         $serial = ''
         if (-not $isMi -and $instance -notmatch '&') { $serial = $instance }
@@ -304,6 +310,11 @@ function Get-UsbList {
     if ($unStor.Count -eq 1 -and $unDisk.Count -eq 1) { $unStor[0].disks = @($unDisk[0]); $unDisk[0].used = $true }
     $list = @()
     foreach ($c in $final) {
+        if ($c.kind -eq 'neznamo') {
+            $list += @{ pnp_id = $c.id; name = $c.name; manufacturer = $c.manufacturer; vid = $c.vid; pid = $c.pid; serial = $c.serial
+                        class = 'neznama zarizeni'; volumes = @(); media = $true }
+            continue
+        }
         if ($c.kind -eq 'telefon') {
             $list += @{ pnp_id = $c.id; name = $c.name; manufacturer = $c.manufacturer; vid = $c.vid; pid = $c.pid; serial = $c.serial
                         class = 'telefon / prenosne zarizeni'; volumes = @(); media = $true }
@@ -419,33 +430,173 @@ function Get-Monitors {
     return ,$list
 }
 
-function Get-Software {
-    $paths = @(
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'Registry::HKEY_USERS\*\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
-    )
-    $seen = @{}
-    $list = @()
-    foreach ($path in $paths) {
-        $items = @(Get-ItemProperty -Path $path -ErrorAction SilentlyContinue)
-        foreach ($i in $items) {
-            $name = Text $i.DisplayName
-            if (-not $name) { continue }
-            if ($i.SystemComponent -eq 1 -or $i.ParentKeyName) { continue }
-            if ((Text $i.ReleaseType) -match '^(Update|Hotfix|Security Update)$') { continue }
-            if ($name -match '^(Security Update|Update|Hotfix) for ') { continue }
-            $version = Text $i.DisplayVersion
-            $key = ($name + '|' + $version).ToLower()
-            if ($seen.ContainsKey($key)) { continue }
-            $seen[$key] = 1
-            $date = Text $i.InstallDate
-            if ($date -match '^(\d{4})(\d{2})(\d{2})$') { $date = '{0}-{1}-{2}' -f $Matches[1], $Matches[2], $Matches[3] }
-            else { $date = '' }
-            $list += @{ name = $name; version = $version; publisher = (Text $i.Publisher); install_date = $date }
+function Read-UninstallKeys([string]$Path, [string]$Source, [string]$Prof, $Index, $List) {
+    # cte zaznamy "Odinstalovat nebo zmenit program" z jedne vetve registru
+    $items = @(Get-ItemProperty -Path $Path -ErrorAction SilentlyContinue)
+    foreach ($i in $items) {
+        $name = Text $i.DisplayName
+        if (-not $name) { continue }
+        if ($i.SystemComponent -eq 1 -or $i.ParentKeyName) { continue }
+        if ((Text $i.ReleaseType) -match '^(Update|Hotfix|Security Update)$') { continue }
+        if ($name -match '^(Security Update|Update|Hotfix) for ') { continue }
+        $version = Text $i.DisplayVersion
+        $key = ($name + '|' + $version).ToLower()
+        if ($Index.ContainsKey($key)) {
+            # stejny program v dalsim profilu: profil se jen pripise (celosystemova instalace se nemeni)
+            $e = $Index[$key]
+            if ($e.source -eq 'profil' -and $Prof -and (($e.profile -split ', ') -notcontains $Prof)) {
+                $e.profile = ($e.profile + ', ' + $Prof).Trim(', ')
+            }
+            continue
+        }
+        $date = Text $i.InstallDate
+        if ($date -match '^(\d{4})(\d{2})(\d{2})$') { $date = '{0}-{1}-{2}' -f $Matches[1], $Matches[2], $Matches[3] }
+        else { $date = '' }
+        $e = @{ name = $name; version = $version; publisher = (Text $i.Publisher); install_date = $date; source = $Source; profile = $Prof }
+        $Index[$key] = $e
+        $List.Add($e) | Out-Null
+    }
+}
+
+function Get-ProfileList {
+    # profily uzivatelu na PC: SID, slozka a jmeno profilu
+    $out = @()
+    try {
+        foreach ($k in @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' -ErrorAction Stop)) {
+            $sid = $k.PSChildName
+            if ($sid -notmatch '^S-1-(5-21|12-1)-') { continue }
+            $path = Text ((Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue).ProfileImagePath)
+            if (-not $path) { continue }
+            $out += @{ sid = $sid; path = $path; name = (Split-Path -Leaf $path) }
+        }
+    } catch {}
+    return $out
+}
+
+function Get-ProfileSoftware($Index, $List) {
+    # software nainstalovany do profilu uzivatele (napr. WhatsApp, Teams, Chrome pro jednoho uzivatele)
+    # prihlaseny uzivatel: registr je nacteny v HKEY_USERS; odhlaseny: docasne se nacte jeho NTUSER.DAT
+    $uninst = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    foreach ($p in @(Get-ProfileList)) {
+        $loaded = Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $p.sid)
+        if ($loaded) {
+            Read-UninstallKeys ('Registry::HKEY_USERS\' + $p.sid + '\' + $uninst) 'profil' $p.name $Index $List
+            continue
+        }
+        $hive = Join-Path $p.path 'NTUSER.DAT'
+        if (-not (Test-Path -LiteralPath $hive)) { continue }
+        $tmp = 'HWSWTMP_' + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+        $ok = $false
+        try {
+            & reg.exe load ('HKU\' + $tmp) $hive 2>$null | Out-Null
+            $ok = ($LASTEXITCODE -eq 0)
+        } catch {}
+        if (-not $ok) { continue }
+        try {
+            Read-UninstallKeys ('Registry::HKEY_USERS\' + $tmp + '\' + $uninst) 'profil' $p.name $Index $List
+        } catch {}
+        # uvolneni: bez toho zustane soubor zamceny a profil nelze odhlasit/smazat
+        for ($t = 0; $t -lt 5; $t++) {
+            [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+            & reg.exe unload ('HKU\' + $tmp) 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Milliseconds 500
         }
     }
-    return ,$list
+}
+
+function Get-ProfileFolderSoftware($Index, $List) {
+    # programy v %LocalAppData%\Programs bez zaznamu v registru (rozbalene / prenosne instalace)
+    $names = @($List | ForEach-Object { $_.name.ToLower() })
+    foreach ($p in @(Get-ProfileList)) {
+        $dir = Join-Path $p.path 'AppData\Local\Programs'
+        foreach ($d in @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue)) {
+            $n = $d.Name
+            $low = $n.ToLower()
+            $hit = $false
+            foreach ($x in $names) { if ($x.Contains($low) -or $low.Contains($x)) { $hit = $true; break } }
+            if ($hit) { continue }
+            $key = ($n + '|').ToLower()
+            if ($Index.ContainsKey($key)) { continue }
+            $date = ''
+            try { $date = $d.CreationTime.ToString('yyyy-MM-dd') } catch {}
+            $e = @{ name = $n; version = ''; publisher = ''; install_date = $date; source = 'slozka v profilu'; profile = $p.name }
+            $Index[$key] = $e
+            $List.Add($e) | Out-Null
+        }
+    }
+}
+
+function Get-StoreSoftware($Index, $List) {
+    # aplikace z Microsoft Store (nejsou v registru "Odinstalovat program"); bez systemovych soucasti a knihoven
+    $skip = '^(Microsoft\.Windows\.|MicrosoftWindows\.|Windows\.|windows\.|Microsoft\.NET|Microsoft\.VCLibs|Microsoft\.UI\.|Microsoft\.Services\.|Microsoft\.WindowsStore|Microsoft\.StorePurchaseApp|Microsoft\.DesktopAppInstaller|Microsoft\.AAD|Microsoft\.AccountsControl|Microsoft\.LockApp|Microsoft\.Win32WebViewHost|Microsoft\.BioEnrollment|Microsoft\.CredDialogHost|Microsoft\.ECApp|Microsoft\.Advertising|Microsoft\.MicrosoftEdge|Microsoft\.XboxGameCallableUI|Microsoft\.SecHealthUI|Microsoft\.WidgetsPlatformRuntime|Microsoft\.WebMediaExtensions|Microsoft\.HEIFImageExtension|Microsoft\.VP9VideoExtensions|Microsoft\.WebpImageExtension|Microsoft\.RawImageExtension|Microsoft\.MPEG2VideoExtension|NcsiUwpApp|InputApp|ParentalControls|1527c705-|c5e2524a-|E2A4F912-|F46D4000-|[0-9a-f]{8}-[0-9a-f]{4}-)'
+    $seen = @{}
+    $pkgs = @()
+    try { $pkgs = @(Get-AppxPackage -AllUsers -ErrorAction Stop) } catch { $pkgs = @(Get-AppxPackage -ErrorAction SilentlyContinue) }
+    foreach ($p in $pkgs) {
+        $n = Text $p.Name
+        if (-not $n -or $n -match $skip) { continue }
+        if ($p.IsFramework -or $p.IsResourcePackage -or $p.IsBundle) { continue }
+        $sk = ''
+        try { $sk = Text $p.SignatureKind } catch {}
+        if ($sk -eq 'System') { continue }
+        try { if ($p.NonRemovable) { continue } } catch {}
+        if ($seen.ContainsKey($n)) { continue }
+        $seen[$n] = 1
+        $disp = ''; $pub = ''
+        try {
+            $mf = Join-Path (Text $p.InstallLocation) 'AppxManifest.xml'
+            if (Test-Path -LiteralPath $mf) {
+                $x = [xml](Get-Content -LiteralPath $mf -ErrorAction Stop)
+                $disp = Text $x.Package.Properties.DisplayName
+                $pub = Text $x.Package.Properties.PublisherDisplayName
+            }
+        } catch {}
+        if (-not $disp -or $disp -match '^ms-resource:') { $disp = ($n -replace '^[0-9A-Za-z]{8,16}\.', '') }
+        if ($pub -match '^ms-resource:') { $pub = '' }
+        if (-not $pub) { $pub = ((Text $p.Publisher) -replace '^CN=([^,]+).*$', '$1') }
+        $version = Text $p.Version
+        $key = ($disp + '|' + $version).ToLower()
+        if ($Index.ContainsKey($key)) { continue }
+        $e = @{ name = $disp; version = $version; publisher = $pub; install_date = ''; source = 'Microsoft Store'; profile = '' }
+        $Index[$key] = $e
+        $List.Add($e) | Out-Null
+    }
+}
+
+function Get-Software {
+    $index = @{}
+    $list = New-Object System.Collections.ArrayList
+    $paths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($path in $paths) { Read-UninstallKeys $path 'registr' '' $index $list }
+    try { Get-ProfileSoftware $index $list } catch { Write-AgentLog ('software v profilech: ' + $_.Exception.Message) }
+    try { Get-ProfileFolderSoftware $index $list } catch {}
+    if ($null -eq $script:StoreApps -or $script:StoreApps) {
+        try { Get-StoreSoftware $index $list } catch { Write-AgentLog ('aplikace Store: ' + $_.Exception.Message) }
+    }
+    return ,@($list)
+}
+
+function Get-RemoteInfo {
+    # je zapnuta vzdalena plocha (RDP) a vzdaleny PowerShell (WinRM)?
+    $out = @{}
+    try {
+        $deny = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -ErrorAction Stop).fDenyTSConnections
+        $out.rdp = ([int]$deny -eq 0)
+    } catch {}
+    try {
+        $nla = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction Stop).UserAuthentication
+        $out.rdp_nla = ([int]$nla -eq 1)
+    } catch {}
+    try {
+        $svc = Get-Service -Name WinRM -ErrorAction Stop
+        $listen = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | ForEach-Object { [int]$_.Port })
+        $out.winrm = (($svc.Status -eq 'Running') -and ($listen -contains 5985 -or $listen -contains 5986))
+    } catch {}
+    return $out
 }
 
 function Get-Disks {
@@ -863,6 +1014,7 @@ function Get-Inventory {
         licenses = (Invoke-Safe { Get-Licenses } @{} 'licence')
         accounts = (Invoke-Safe { Get-Accounts } @{} 'ucty')
         network = (Invoke-Safe { Get-NetworkExtra } @{} 'sit')
+        remote = (Invoke-Safe { Get-RemoteInfo } @{} 'vzdaleny pristup')
         monitors = (Get-Monitors)
         software = (Get-Software)
         usb = (Get-UsbList)
@@ -1166,6 +1318,7 @@ function Read-Reply($Reply) {
     try { if ($Reply.inventory_hours) { $script:InventoryHours = [int]$Reply.inventory_hours } } catch {}
     try { $script:FilesEnabled = [bool]$Reply.usb_files } catch {}
     try { $script:AuditEnabled = [bool]$Reply.usb_audit } catch {}
+    try { if ($null -ne $Reply.store_apps) { $script:StoreApps = [bool]$Reply.store_apps } } catch {}
     $cmd = ''
     try { $cmd = [string]$Reply.cmd } catch {}
     if ($cmd -eq 'retry') {

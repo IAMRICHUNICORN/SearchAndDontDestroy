@@ -812,11 +812,14 @@ PAGES.prehled = async (main) => {
     main.append(el('div', { class: 'note-box usb-alert' },
       el('div', { class: 'row' }, el('strong', null, '⚠ USB varování: '), el('span', null, d.usb_alerts_total + ' nepřevzatých (připojené úložiště nebo telefon)'),
         el('button', { class: 'right', onclick: async () => { try { await api('POST', '/api/usb/ack', { all: true }); route(); } catch (e) { fail(e); } } }, 'Převzít vše')),
-      el('ul', { class: 'feed' }, d.usb_alerts.slice(0, 8).map((e) => el('li', null,
-        el('time', null, fmtDate(e.ts)), el('span', { class: 'badge warn' }, e.class),
-        el('strong', null, e.name || 'USB zařízení'), e.label ? el('span', { class: 'muted' }, e.label + (e.drive ? ' (' + e.drive + ')' : '')) : null,
-        el('a', { class: 'right', href: '#/zarizeni/' + e.device_id }, e.hostname), e.user ? el('span', { class: 'muted' }, e.user) : null,
-        el('button', { class: 'small', onclick: async () => { try { await api('POST', '/api/usb/ack', { ids: [e.id] }); route(); } catch (x) { fail(x); } } }, 'Převzít')))),
+      el('ul', { class: 'feed usb-who' }, d.usb_alerts.slice(0, 8).map((e) => el('li', null,
+        el('div', null, el('span', { class: 'badge warn' }, e.class), ' ', el('strong', null, e.name || 'USB zařízení'),
+          e.label ? el('span', { class: 'muted' }, ' · ' + e.label + (e.drive ? ' (' + e.drive + ')' : '')) : null),
+        el('div', { class: 'muted' }, el('strong', null, 'Kdy: '), fmtDate(e.ts), '   ',
+          el('strong', null, 'Kdo: '), e.user ? (e.user_name ? e.user_name + ' (' + e.user + ')' : e.user) : 'nikdo nebyl přihlášen / neznámo', '   ',
+          el('strong', null, 'Kde: '), el('a', { href: '#/zarizeni/' + e.device_id }, e.hostname),
+          (e.ip ? ' · ' + e.ip : '') + (e.location ? ' · ' + e.location : '')),
+        el('button', { class: 'small right', onclick: async () => { try { await api('POST', '/api/usb/ack', { ids: [e.id] }); route(); } catch (x) { fail(x); } } }, 'Převzít')))),
       d.usb_alerts_total > 8 ? el('a', { href: '#/usb' }, 'Zobrazit všechna (' + d.usb_alerts_total + ')') : null));
   }
   if (d.agent_summary) {
@@ -961,6 +964,7 @@ PAGES.zarizeni = async (main, parts, params) => {
     ['oldagent', 'Zastaralý agent', 'old', { col: 'agent_ver_status', op: 'in', value: 'zastaralý,neznámá', tab: true }],
     ['agenterr', 'Agent s chybou', 'h_bad', { col: 'agent_health', op: 'eq', value: 'chyba', tab: true }],
     ['agentwarn', 'Agent s varováním', 'h_warn', { col: 'agent_health', op: 'eq', value: 'varování', tab: true }],
+    ['rdp', 'RDP zapnuto', 'rdp', { col: 'rdp', op: 'eq', value: 'ano', tab: true }],
     ['pinned', 'Verze připnuta', 'pinned', { col: 'agent_pinned', op: 'eq', value: 'ano', tab: true }],
     ['nosec', 'Bez sekce', 'no_section', { col: 'section', op: 'eq', value: '', tab: true }],
   ];
@@ -1027,7 +1031,7 @@ PAGES.zarizeni = async (main, parts, params) => {
       flagCounts.online.textContent = c.online; flagCounts.offline.textContent = c.offline;
       flagCounts.never.textContent = c.never; flagCounts.stale.textContent = c.stale; flagCounts.no_section.textContent = c.no_section;
       flagCounts.ip_conflicts.textContent = c.ip_conflicts;
-      flagCounts.old.textContent = c.old; flagCounts.h_bad.textContent = c.h_bad; flagCounts.h_warn.textContent = c.h_warn; flagCounts.pinned.textContent = c.pinned;
+      flagCounts.old.textContent = c.old; flagCounts.h_bad.textContent = c.h_bad; flagCounts.h_warn.textContent = c.h_warn; flagCounts.pinned.textContent = c.pinned; flagCounts.rdp.textContent = c.rdp;
       legend.replaceChildren(
         el('span', { class: 'dot on' }), T('odesílá data (do ' + c.stale_hours + ' h)') + '   ',
         el('span', { class: 'dot warn' }), T('agent neposlal data déle než ' + c.stale_hours + ' h') + '   ',
@@ -1675,6 +1679,15 @@ PAGES.agent = async (main, parts, params) => {
         el('li', null, 'Zvyšte velikost Security logu (Event Log → Security → Maximum log size, např. 256 MB), aby se události nepřepisovaly.'),
         el('li', null, 'V Nastavení → Agent zapněte „Sledování souborů“ a „Sledovat i soubory čtené Z USB“. Na PC pak vyvolejte gpupdate /force (nebo počkejte na obnovení GPO).')),
       el('p', { class: 'muted' }, 'Kontrola: na PC spusťte auditpol /get /category:"Object Access" – u Removable Storage musí být Success. U zařízení → záložka Agent uvidíte „Čtení z USB (audit Windows): zapnuto“ a počet zachycených událostí. Před zapnutím zajistěte směrnici o monitoringu (§ 316 zákoníku práce).')),
+    el('div', { class: 'card' }, el('h2', null, 'Vzdálený PowerShell (WinRM) přes GPO'),
+      el('p', null, 'Nepotřebujete ho pro HWSW (agent běží na každém PC sám). Hodí se správci: příkaz na dálku bez rušení uživatele, třeba Invoke-Command -ComputerName PC01 -ScriptBlock { ... }. Zapněte ho jen, když ho budete používat, a jen pro správce a vaši síť.'),
+      el('ol', null,
+        el('li', null, 'Group Policy Management: upravte GPO pro OU s počítači (nebo vytvořte samostatné).'),
+        el('li', null, 'Computer Configuration → Policies → Administrative Templates → Windows Components → Windows Remote Management (WinRM) → WinRM Service → Allow remote server management through WinRM = Enabled; do IPv4 filter zadejte jen rozsah vaší sítě (např. 192.168.10.0/24).'),
+        el('li', null, 'Computer Configuration → Policies → Windows Settings → Security Settings → System Services → Windows Remote Management (WS-Management) → Startup Mode = Automatic.'),
+        el('li', null, 'Computer Configuration → Policies → Windows Settings → Security Settings → Windows Defender Firewall with Advanced Security → Inbound Rules → New Rule → Predefined: Windows Remote Management; omezte Scope na adresu vašeho PC a profil Domain.'),
+        el('li', null, 'Na PC vyvolejte gpupdate /force. Kontrola z vašeho PC: Test-WSMan PC01. Port 5985 pak bude v seznamu naslouchajících portů a v Zařízeních u sloupce „Vzdálený PowerShell (WinRM)“.')),
+      el('p', { class: 'muted' }, 'Do WinRM se může přihlásit jen správce. Jiná práva než u RDP nepotřebujete. Zapnutí se v HWSW nijak nemění – aplikace jen zobrazuje stav.')),
     el('div', { class: 'card' }, el('h2', null, 'Test – co jde na počítači zjistit'),
       el('p', null, 'Nic neodesílá ani neinstaluje. Jen na obrazovku vypíše, které údaje se podařilo zjistit.'), cmd(a.test)),
     el('div', { class: 'card' }, el('h2', null, 'Jednorázová inventura'),
@@ -1769,6 +1782,7 @@ PAGES.nastaveni = async (main) => {
     el('div', { class: 'card' }, el('h2', null, 'Agent: verze a aktualizace'), agentVersionsBox, 
       el('h3', { style: 'margin-top:18px' }, 'Sledování souborů zapsaných na USB'),
       check('usb_files_enabled', 'Zapnout (agenti hlásí názvy a velikosti souborů zapsaných na USB úložiště)'),
+      check('agent_store_apps', 'Software: hlásit i aplikace z Microsoft Store (WhatsApp, Teams a další; bez systémových součástí)'),
       check('usb_audit_enabled', 'Sledovat i soubory čtené Z USB (audit Windows – vyžaduje GPO, návod je na stránce Agent)'),
       el('div', { class: 'form-grid' }, text('usb_files_days', 'Uchovávat záznamy souborů (dní)', null, 'number'),
         text('agent_problems_days', 'Uchovávat problémy agentů (dní)', null, 'number'),
@@ -1859,7 +1873,7 @@ function connectEvents() {
   S.es.onmessage = (m) => {
     let ev; try { ev = JSON.parse(m.data); } catch (e) { return; }
     if (ev.type === 'usb' && isAdmin() && ev.name) {
-      if (ev.alert) toast('⚠ ' + ev.hostname + ': ' + ev.action + ' ' + ev.class + ' – ' + ev.name + (ev.user ? ' (' + ev.user + ')' : ''), 'warn', true);
+      if (ev.alert) toast('⚠ USB ' + ev.action + ': ' + ev.class + ' – ' + ev.name + '\nKdo: ' + (ev.user ? (ev.user_name ? ev.user_name + ' (' + ev.user + ')' : ev.user) : 'neznámo') + '\nKde: ' + ev.hostname + (ev.ip ? ' · ' + ev.ip : '') + (ev.location ? ' · ' + ev.location : '') + '\nKdy: ' + fmtDate(ev.ts), 'warn', true);
       else toast(ev.hostname + ': ' + ev.action + ' – ' + ev.name);
     }
     if (S.live) { try { S.live(ev); } catch (e) { /* stranka se mezitim zmenila */ } }

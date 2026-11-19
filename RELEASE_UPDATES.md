@@ -7,6 +7,18 @@ Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CH
 
 (zatim nic)
 
+## Hotovo (vydano) ve verzi 1.10.0 ( agent 2.3.0, schema 10)
+1. [A1] Zmeny softwaru do hodiny: interval inventury 1 h, migrace prepise 6 -> 1 (schema 9).
+2. [B1-B3] Software v profilech (i odhlasene profily pres NTUSER.DAT, slozky AppData\Local\Programs); sloupce Zdroj instalace a Profil (schema 10).
+3. [B4] Aplikace z Microsoft Store; nastaveni "agent_store_apps" (vychozi zapnuto).
+4. [B5] Sloupec a filtr RDP zapnuto; sloupec WinRM.
+5. [B6] Navod na WinRM pres GPO na strance Agent.
+6. [C1] Neznama USB zarizeni jako informace v historii (bez varovani).
+7. [C4] Nove sloupce (stari OS/monitoru, odinstalace/instalace za 30 dni, zastarale verze SW, GPU, jadra, RAM sloty a moduly, brana/DNS/DHCP,
+   tiskarny, mistni ucty, problemy agenta); cena licence uz existuje ("Cena").
+8. USB varovani ukazuje KDY, KDO (jmeno z AD + ucet) a KDE (PC, IP, umisteni); sloupec jmeno uzivatele v historii.
+NEOVERENO na skutecnem Windows: nacitani NTUSER.DAT, Get-AppxPackage, registr RDP, rozpoznani neznameho USB.
+
 ## Hotovo (vydano) ve verzi 1.9.0 (agent 2.2.0)
 1. USB - prepracovat detekci (navrh k odsouhlaseni): hlasit jen skutecne uloziste s medii a telefony/prenosna zarizeni (MTP/PTP/Apple/ADB),
    okamzite varovani (trvale upozorneni v aplikaci, ne jen mizici toast); prazdna ctecka/dock/kabel bez uloziste se nehlasi jako uloziste;

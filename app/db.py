@@ -331,6 +331,15 @@ MIGRATIONS = [
         "UPDATE usb_events SET ack_at = ts, ack_by = 'původní záznam' WHERE COALESCE(ack_at, '') = ''",
         "CREATE INDEX idx_usb_events_ack ON usb_events(ack_at)",
     ],
+    # 9: zmeny softwaru se maji projevit do hodiny (puvodni vychozi interval inventury byl 6 h)
+    [
+        "UPDATE settings SET value = '1' WHERE key = 'agent_inventory_hours' AND value = '6'",
+    ],
+    # 10: software - zdroj (registr / profil / Store) a profil, ve kterem je nainstalovan
+    [
+        "ALTER TABLE software ADD COLUMN source TEXT DEFAULT ''",
+        "ALTER TABLE software ADD COLUMN profile TEXT DEFAULT ''",
+    ],
 ]
 
 
@@ -657,7 +666,7 @@ DEFAULT_SETTINGS = {
     "winrm_password": "",
     "winrm_mode": "once",
     "winrm_interval_min": "720",
-    "agent_inventory_hours": "6",
+    "agent_inventory_hours": "1",
     "agent_autoupdate": "0",
     "offline_after_min": "20",
     "agent_stale_hours": "72",
@@ -671,6 +680,7 @@ DEFAULT_SETTINGS = {
     "usb_files_days": "90",
     "agent_problems_days": "30",
     "agent_error_days": "3",         # chyba agenta se z varovani zmeni na "chyba", kdyz trva/opakuje se tolik dni
+    "agent_store_apps": "1",         # agent hlasi i aplikace z Microsoft Store
     "usb_audit_enabled": "0",        # cist audit vymennych medii z Windows (soubory Z USB; vyzaduje GPO)
 }
 

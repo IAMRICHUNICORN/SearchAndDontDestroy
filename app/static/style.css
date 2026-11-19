@@ -262,3 +262,7 @@ td.clickable:hover { text-decoration: underline; }
 .note-box.usb-alert { border-left: 4px solid #f0b429; }
 table.plain { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.plain th, table.plain td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line, #ddd); }
+.toast { white-space: pre-line; }
+.usb-who li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.usb-who li > div { flex: 1 1 60%; }
+.usb-who li > div + div { flex-basis: 100%; order: 3; }

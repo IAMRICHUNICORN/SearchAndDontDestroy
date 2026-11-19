@@ -2,6 +2,20 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.10.0
+- **Agent 2.3.0** (cíl „Nejnovější“ ho rozešle do 5 minut od aktualizace serveru; chcete-li ho nejdřív vyzkoušet, nastavte cíl 2.2.0 a 2.3.0 připněte jednomu PC).
+- **Software do hodiny:** výchozí interval úplné inventury je 1 h (dřív 6 h). Hodnota 6 se při aktualizaci sama změní na 1 (schéma 9), ručně nastavená jiná zůstává.
+- **Software v profilech uživatelů:** agent čte i programy nainstalované do profilu (např. WhatsApp ze stránek přes admin účet), i když je uživatel odhlášený
+  (registr profilu se dočasně načte a uvolní), a složky `AppData\Local\Programs`. U softwaru přibyl „Zdroj instalace“ (registr / profil / složka v profilu / Microsoft Store)
+  a „Profil“, ve kterém je nainstalovaný (schéma 10).
+- **Aplikace z Microsoft Store** se hlásí jako software (bez systémových součástí a knihoven). Vypíná se v Nastavení → Agent.
+- **Vzdálený přístup:** nový údaj, filtr a sloupec „RDP zapnuto“ a „Vzdálený PowerShell (WinRM)“; návod na WinRM přes GPO na stránce Agent.
+- **USB varování: kdy, kdo, kde.** Varování na Přehledu i okno ukazují čas, uživatele (jméno z AD a účet) a počítač s IP adresou a umístěním. V USB → Historie přibyl sloupec „Jméno uživatele v čase události“.
+- **USB:** neznámá USB zařízení (např. „Device Descriptor Request Failed“) se zapisují do historie jako informace, bez varování.
+- **Nové sloupce:** stáří instalace OS, stáří nejstaršího monitoru, odinstalováno / nainstalováno za 30 dní, software se zastaralou verzí, grafická karta a její paměť,
+  jádra a vlákna CPU, sloty a moduly RAM, brána, DNS, DHCP server, tiskárny, místní účty, počet problémů agenta; u softwaru „Zastaralá verze“.
+  Cena licence už je ve sloupci „Cena“ v Licencích.
+
 ## 1.9.0
 - **Agent 2.2.0:** nasazuje se stejně jako dřív (cíl „Nejnovější" přepne agenty 2.0.0 a 2.1.0 do 5 minut od aktualizace serveru; chcete-li ho nejdřív vyzkoušet, nastavte
   před aktualizací v *Nastavení → Agent* cíl 2.1.0 a 2.2.0 připněte jednomu PC).
