@@ -5,7 +5,16 @@ Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CH
 
 ## Cekaji na dalsi vydani
 
-(zatim nic)
+5. Moderni a mobilni rozhrani celeho programu (responzivni, automaticky podle sirky, filtry a pohledy jako priorita), volitelne ikona na plochu (PWA).
+   Zatim NEIMPLEMENTOVANO (doporuceno jako samostatne vydani; mobilni podoba je zatim jen u sekce Security).
+
+## Hotovo (vydano) ve verzi 1.11.0 (agent 2.4.0, schema 12)
+1. Format stari: CS "L M D" / EN "Y M D", velkymi pismeny (25D, 3M 12D, 2L 3M 12D), plny text po najeti mysi; razeni/filtry dle dni (os_age_days, hotfix_age).
+2. Datum instalace OS: sloupec (servery i stanice) + stari v kartě PC.
+3. Sekce Security: Prehled + Matice (8 kontrol), karta PC shodna, notebook sifrovani = chyba / stolni PC a server = varovani,
+   prahy v Nastaveni (30/60 dni, 183 dni), vyjimky OK-V / OK-E, mobil (tecky), export CSV, filtr v adrese.
+4. Office predplatne: agent 2.4.0 hlasi ucty prihlasene v Office; stav "aktivovano uzivatelem" / "nikdo neni prihlasen"; sloupce Office - ucty a stav.
+NEOVERENO na skutecnem Windows: cteni uctu Office z registru profilu (agent 2.4.0).
 
 ## Hotovo (vydano) ve verzi 1.10.1 ( bez noveho agenta, schema 11)
 1. Zmeny SW od nuly: migrace smaze historii sw_changes; "stav 0" - prvni inventura po zmene verze agenta/noveho PC zmeny nezapisuje. ODSOUHLASENO ("po nasazeni smaz").

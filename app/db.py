@@ -345,6 +345,12 @@ MIGRATIONS = [
     [
         "DELETE FROM sw_changes",
     ],
+    # 12: Security - vyjimky u kontrol (oznacene OK-V): zarizeni + kontrola + poznamka
+    [
+        "CREATE TABLE security_exceptions (device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE, "
+        "check_key TEXT NOT NULL, note TEXT DEFAULT '', by_user TEXT DEFAULT '', ts TEXT DEFAULT '', "
+        "PRIMARY KEY (device_id, check_key))",
+    ],
 ]
 
 
@@ -687,6 +693,9 @@ DEFAULT_SETTINGS = {
     "agent_error_days": "3",         # chyba agenta se z varovani zmeni na "chyba", kdyz trva/opakuje se tolik dni
     "agent_store_apps": "1",         # agent hlasi i aplikace z Microsoft Store
     "usb_audit_enabled": "0",        # cist audit vymennych medii z Windows (soubory Z USB; vyzaduje GPO)
+    "sec_update_warn_days": "30",    # Security: aktualizace Windows starsi nez tolik dni = varovani
+    "sec_update_err_days": "60",     # ... a tolik dni = chyba
+    "sec_os_warn_days": "183",       # varovat tolik dni pred koncem podpory OS
 }
 
 

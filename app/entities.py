@@ -297,6 +297,7 @@ ENTITIES = {
             "winrm": ("Vzdálený PowerShell (WinRM)",
                       "CASE WHEN json_extract(d.details, '$.remote.winrm') IS NULL THEN NULL "
                       "WHEN json_extract(d.details, '$.remote.winrm') IN (1, 'true') THEN 1 ELSE 0 END", "bool"),
+            "os_install_date": ("Datum instalace OS", "json_extract(d.details, '$.os.install_date')", "date"),
             "os_age_days": ("Stáří instalace OS (dny)",
                             "CASE WHEN COALESCE(json_extract(d.details, '$.os.install_date'), '') <> '' "
                             "THEN CAST(julianday('now') - julianday(json_extract(d.details, '$.os.install_date')) AS INTEGER) END", "num"),
@@ -309,6 +310,16 @@ ENTITIES = {
             "sw_added_30d": ("Nainstalováno za 30 dní",
                              "(SELECT COUNT(*) FROM sw_changes c WHERE c.device_id = d.id AND c.action = 'nainstalováno' "
                              "AND c.ts >= datetime('now', '-30 days'))", "num"),
+            "office_accounts": ("Office – přihlášené účty",
+                                "(SELECT group_concat(DISTINCT json_extract(j.value, '$.email')) FROM json_each(d.details, '$.licenses.office_accounts') j "
+                                "WHERE COALESCE(json_extract(j.value, '$.signed_out'), 0) IN (0, 'false'))", "text"),
+            "office_state": ("Office – stav",
+                             "CASE WHEN NOT EXISTS (SELECT 1 FROM json_each(d.details, '$.licenses.products') p "
+                             "WHERE json_extract(p.value, '$.kind') = 'Office') THEN NULL "
+                             "WHEN json_extract(d.details, '$.licenses.office_accounts') IS NULL THEN 'neznámo (starší agent)' "
+                             "WHEN EXISTS (SELECT 1 FROM json_each(d.details, '$.licenses.office_accounts') j "
+                             "WHERE COALESCE(json_extract(j.value, '$.signed_out'), 0) IN (0, 'false')) THEN 'aktivováno uživatelem' "
+                             "ELSE 'nikdo není přihlášen' END", "text"),
             "sw_outdated": ("Software se zastaralou verzí (počet)", "(SELECT COUNT(*) FROM software s WHERE s.device_id = d.id AND " + _SW_OUTDATED + ")", "num"),
             "gpu": ("Grafická karta", "(SELECT GROUP_CONCAT(json_extract(v.value, '$.name'), ', ') FROM json_each(d.details, '$.gpus') v)", "text"),
             "gpu_vram": ("Paměť grafiky (MB)", "(SELECT MAX(json_extract(v.value, '$.vram_mb')) FROM json_each(d.details, '$.gpus') v)", "num"),

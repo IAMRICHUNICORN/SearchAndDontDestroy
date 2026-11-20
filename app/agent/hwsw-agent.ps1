@@ -797,6 +797,53 @@ function Get-DiskHealthText($Disks, $Predicted) {
     return ''
 }
 
+function Read-OfficeIdentities($Root, $Name) {
+    # ucty prihlasene v Office (Microsoft 365) v jednom profilu: e-mail a priznak odhlaseni
+    $res = @()
+    $base = $Root + '\Software\Microsoft\Office\16.0\Common\Identity\Identities'
+    foreach ($k in @(Get-ChildItem -Path $base -ErrorAction SilentlyContinue)) {
+        $v = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue
+        if (-not $v) { continue }
+        $mail = Text $v.EmailAddress
+        if (-not $mail) { continue }
+        $so = 0
+        try { $so = [int]$v.SignedOut } catch {}
+        $res += @{ profile = $Name; email = $mail; signed_out = ($so -eq 1) }
+    }
+    return $res
+}
+
+function Get-OfficeAccounts {
+    # kdo je prihlasen v Office: prihlaseny profil primo z HKEY_USERS, odhlaseny pres docasne nacteny NTUSER.DAT
+    $list = @()
+    foreach ($p in @(Get-ProfileList)) {
+        $loaded = Test-Path -LiteralPath ('Registry::HKEY_USERS\' + $p.sid)
+        if ($loaded) {
+            $list += @(Read-OfficeIdentities ('Registry::HKEY_USERS\' + $p.sid) $p.name)
+            continue
+        }
+        $hive = Join-Path $p.path 'NTUSER.DAT'
+        if (-not (Test-Path -LiteralPath $hive)) { continue }
+        $tmp = 'HWSWTMP_' + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+        $ok = $false
+        try {
+            & reg.exe load ('HKU\' + $tmp) $hive 2>$null | Out-Null
+            $ok = ($LASTEXITCODE -eq 0)
+        } catch {}
+        if (-not $ok) { continue }
+        try {
+            $list += @(Read-OfficeIdentities ('Registry::HKEY_USERS\' + $tmp) $p.name)
+        } catch {}
+        for ($t = 0; $t -lt 5; $t++) {
+            [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+            & reg.exe unload ('HKU\' + $tmp) 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    return @($list | Select-Object -First 30)
+}
+
 function Get-Licenses {
     $out = @{ oem_key = ''; oem_description = ''; windows_text = '' }
     $svc = Wmi 'SoftwareLicensingService' | Select-Object -First 1
@@ -833,6 +880,14 @@ function Get-Licenses {
         }
     }
     $out.products = @($products | Select-Object -First 40)
+    # Microsoft 365 / Office Click-to-Run: verze a ucty prihlasene v Office (predplatne je vazano na uzivatele, ne na PC)
+    try {
+        $c2r = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' -ErrorAction Stop
+        $out.office = @{ version = (Text $c2r.VersionToReport); products = (Text $c2r.ProductReleaseIds); channel = (Text $c2r.CDNBaseUrl) }
+    } catch {}
+    if ($out.office -or @($products | Where-Object { $_.kind -eq 'Office' }).Count -gt 0) {
+        $out.office_accounts = @(Get-OfficeAccounts)
+    }
     $win = $products | Where-Object { $_.kind -eq 'Windows' } | Select-Object -First 1
     if ($win) {
         $out.windows_text = $win.status

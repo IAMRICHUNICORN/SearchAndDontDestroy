@@ -2,6 +2,20 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.11.0
+- **Agent 2.4.0** (cíl „Nejnovější“ ho rozešle do 5 minut od aktualizace serveru; chcete-li ho nejdřív vyzkoušet, nastavte cíl 2.3.0 a 2.4.0 připněte jednomu PC).
+  Nově hlásí účty přihlášené v Office (Microsoft 365) a verzi Office. Server funguje i se staršími agenty (údaje o Office pak chybí).
+- **Nová sekce Security** (menu Evidence → Security), schéma 12:
+  - **Přehled:** „v pořádku X z Y“, karty s počtem problémů u 8 zásadních kontrol (šifrování disku, antivirus, firewall, aktualizace Windows, podpora OS, RDP/NLA, disk S.M.A.R.T., agent), seznam „Co je špatně“ seřazený podle závažnosti.
+  - **Matice:** zařízení pod sebou, kontroly ve sloupcích (barva + krátký text, na mobilu barevné tečky), součty problémů, hledání, filtry (problémové / jen chyby / stanice / servery / skupina / jedna kontrola), řazení, export CSV. Filtr se ukládá do adresy, takže ho lze přidat do záložek prohlížeče.
+  - **Karta PC → Zabezpečení** ukazuje stejných 8 kontrol s doporučením.
+  - Šifrování disku: u notebooku chyba, u stolního PC a serveru varování. Prahy (aktualizace 30/60 dní, předstih před koncem podpory OS) jsou v Nastavení → Security.
+  - **Výjimky:** u PC a kontroly lze nastavit výjimku s poznámkou; kontrola se pak označí **OK-V** (anglicky OK-E) a počítá se jako v pořádku.
+- **Stáří ve formátu L M D:** stáří instalace OS a dnů od poslední aktualizace se zobrazuje jako `25D`, `3M 12D`, `2L 3M 12D` (anglicky Y M D); plný text po najetí myší. Řazení a filtry dál podle dnů.
+- **Datum instalace OS:** nový sloupec (počítače i servery); v kartě PC datum + stáří.
+- **Office (předplatné):** záložka Licence systému ukazuje stav podle přihlášeného účtu v Office („aktivováno uživatelem“ + e-mail, nebo „nikdo není přihlášen“) místo zavádějícího „upozornění / Grace“; nové sloupce „Office – přihlášené účty“ a „Office – stav“.
+- NEOVĚŘENO na skutečném Windows: čtení přihlášených účtů Office z registru profilů (agent 2.4.0).
+
 ## 1.10.1
 - **Změny SW od nuly:** při aktualizaci se jednorázově vymaže historie změn softwaru (obsahovala falešné „instalace“ po změně zdrojů dat agenta; schéma 11,
   před aktualizací se dělá záloha). Seznam nainstalovaného softwaru u PC se nemění.

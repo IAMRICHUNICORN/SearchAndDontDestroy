@@ -34,5 +34,11 @@
   "date": "2026-11-19",
   "legacy": false,
   "notes": "Software: i programy instalované do profilu uživatele (včetně odhlášených profilů), aplikace z Microsoft Store a zdroj instalace; údaj o zapnuté vzdálené ploše a WinRM; neznámá USB zařízení jako informace."
+ },
+ {
+  "version": "2.4.0",
+  "date": "2026-11-20",
+  "legacy": false,
+  "notes": "Microsoft 365 / Office: hlásí účty přihlášené v Office (i v odhlášených profilech) a verzi Office, aby se předplatné na uživatele hodnotilo správně."
  }
 ]

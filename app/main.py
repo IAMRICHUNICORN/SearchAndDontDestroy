@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from . import agentrel, db, discovery, entities, ingest, snapshots, tls
+from . import agentrel, db, discovery, entities, ingest, security, snapshots, tls
 from .bus import bus
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -588,7 +588,44 @@ def device_detail(device_id: int, view: Optional[int] = None, user=Depends(activ
         device["usb_current"] = q("SELECT * FROM usb_current WHERE device_id = ? ORDER BY name COLLATE NOCASE")
         device["usb_events"] = q("SELECT * FROM usb_events WHERE device_id = ? ORDER BY id DESC LIMIT 200")
         device["sw_changes"] = q("SELECT * FROM sw_changes WHERE device_id = ? ORDER BY id DESC LIMIT 200")
+        hm, hr = "", ""
+        _m, hrows, _t = entities.run_query(conn, "devices", ["agent_health", "agent_health_reason"], only_device=device_id, limit=1)
+        if hrows:
+            hm, hr = hrows[0]["agent_health"], hrows[0]["agent_health_reason"]
+        device["security_eval"] = security.device_eval(
+            conn, device_id, {"type": device.get("device_type"), "os_name": device.get("os_name")}, device["details"], hm, hr)
     return device
+
+
+@app.get("/api/security")
+def security_overview(user=Depends(admin_user)):
+    with db.db() as conn:
+        return security.overview(conn)
+
+
+@app.put("/api/security/exception")
+def security_exception_set(body: dict = Body(...), user=Depends(admin_user)):
+    try:
+        device_id = int(body.get("device_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Neplatné zařízení")
+    key = str(body.get("check") or "")
+    if key not in security.CHECK_KEYS:
+        raise HTTPException(400, "Neznámá kontrola")
+    note = str(body.get("note") or "").strip()[:300]
+    with db.db() as conn:
+        if conn.execute("SELECT 1 FROM devices WHERE id = ?", (device_id,)).fetchone() is None:
+            raise HTTPException(404, "Zařízení neexistuje")
+        conn.execute("INSERT OR REPLACE INTO security_exceptions (device_id, check_key, note, by_user, ts) VALUES (?, ?, ?, ?, ?)",
+                     (device_id, key, note, user["username"], db.now()))
+    return {"ok": True}
+
+
+@app.delete("/api/security/exception")
+def security_exception_del(device_id: int, check: str, user=Depends(admin_user)):
+    with db.db() as conn:
+        conn.execute("DELETE FROM security_exceptions WHERE device_id = ? AND check_key = ?", (device_id, check))
+    return {"ok": True}
 
 
 @app.put("/api/devices/{device_id}")
@@ -895,7 +932,8 @@ def settings_put(body: dict = Body(...), user=Depends(admin_user)):
     numeric = {"ad_interval_min": (15, 10080), "scan_interval_min": (5, 10080), "winrm_interval_min": (60, 43200),
                "agent_inventory_hours": (1, 168), "offline_after_min": (5, 1440), "agent_stale_hours": (1, 8760), "backup_hour": (0, 23),
                "backup_keep": (1, 365), "usb_events_keep_days": (7, 3650), "usb_files_days": (1, 3650),
-               "agent_problems_days": (1, 365), "agent_error_days": (1, 60)}
+               "agent_problems_days": (1, 365), "agent_error_days": (1, 60),
+               "sec_update_warn_days": (1, 3650), "sec_update_err_days": (1, 3650), "sec_os_warn_days": (1, 1825)}
     with db.db() as conn:
         for key in db.DEFAULT_SETTINGS:
             if key not in body or key in ("agent_target_version", "agent_target_gen"):

@@ -211,6 +211,55 @@ function fmtMinutes(m) {
   return d + ' d' + (h ? ' ' + h + ' h' : '');
 }
 
+// stari: pod mesic "N D", od mesice "M M D D", od roku "R L M M D D" (CS: L M D, EN: Y M D); kalendarne, nulove casti se vynechaji
+function daysSince(dateStr) {
+  const t = Date.parse(String(dateStr).slice(0, 10));
+  return isFinite(t) ? Math.round((Date.now() - t) / 86400000) : null;
+}
+function ageParts(days) {
+  days = Math.floor(Number(days));
+  if (!isFinite(days) || days < 0) return null;
+  const now = new Date();
+  const t = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const s0 = new Date(t.getFullYear(), t.getMonth(), t.getDate() - days);
+  const addM = (n) => {
+    const r = new Date(s0.getFullYear(), s0.getMonth() + n, 1);
+    const last = new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate();
+    r.setDate(Math.min(s0.getDate(), last));
+    return r;
+  };
+  let tm = (t.getFullYear() - s0.getFullYear()) * 12 + (t.getMonth() - s0.getMonth());
+  if (addM(tm) > t) tm--;
+  const d = Math.round((t - addM(tm)) / 86400000);
+  return { y: Math.floor(tm / 12), m: tm % 12, d };
+}
+function fmtAge(days) {
+  const p = ageParts(days);
+  if (!p) return '';
+  const u = S.lang === 'en' ? ['Y', 'M', 'D'] : ['L', 'M', 'D'];
+  const out = [];
+  if (p.y) out.push(p.y + u[0]);
+  if (p.m) out.push(p.m + u[1]);
+  if (p.d || !out.length) out.push(p.d + u[2]);
+  return out.join(' ');
+}
+function fmtAgeFull(days) {
+  const p = ageParts(days);
+  if (!p) return '';
+  const en = S.lang === 'en';
+  const pl = (n, a, b, c) => n + ' ' + (en ? (n === 1 ? a : c) : (n === 1 ? a : (n >= 2 && n <= 4 ? b : c)));
+  const out = [];
+  if (p.y) out.push(en ? pl(p.y, 'year', '', 'years') : pl(p.y, 'rok', 'roky', 'let'));
+  if (p.m) out.push(en ? pl(p.m, 'month', '', 'months') : pl(p.m, 'měsíc', 'měsíce', 'měsíců'));
+  if (p.d || !out.length) out.push(en ? pl(p.d, 'day', '', 'days') : pl(p.d, 'den', 'dny', 'dní'));
+  return out.length === 2 ? out.join(en ? ' and ' : ' a ') : out.join(' ');
+}
+// sloupce, jejichz hodnota je pocet dni (zobrazi se jako stari; razeni a filtry zustavaji podle dni)
+const AGE_KEYS = new Set(['os_age_days', 'hotfix_age']);
+function ageNode(days) {
+  return el('span', { title: fmtAgeFull(days) }, fmtAge(days));
+}
+
 const verGe = (v, min) => {
   const a = String(v || '').split('.').map((x) => parseInt(x, 10) || 0);
   const b = String(min).split('.').map((x) => parseInt(x, 10) || 0);
@@ -333,6 +382,7 @@ function cell(col, row) {
   if (col.key === 'action') return add(td, [el('span', { class: 'badge ' + (ACTION_BADGE[v] || '') }, v)]);
   if (col.key === 'free' && v < 0) return add(td, [el('span', { class: 'badge bad' }, v)]);
   if (col.type === 'date') return add(td, [fmtDate(v)]);
+  if (AGE_KEYS.has(col.key)) return add(td, [ageNode(v)]);
   if (col.type === 'num') return add(td, [String(v).replace('.', ',')]);
   return add(td, [v]);
 }
@@ -709,7 +759,7 @@ function passwordDialog(forced) {
 
 const ADMIN_NAV = [
   ['', [['prehled', 'Přehled']]],
-  ['Evidence', [['zarizeni', 'Zařízení'], ['software', 'Software'], ['monitory', 'Monitory'], ['usb', 'USB zařízení'], ['licence', 'Licence']]],
+  ['Evidence', [['zarizeni', 'Zařízení'], ['software', 'Software'], ['monitory', 'Monitory'], ['usb', 'USB zařízení'], ['licence', 'Licence'], ['security', 'Security']]],
   ['Pohledy', [['pohledy', 'Šablony pohledů']]],
   ['Správa', [['skenovani', 'Skenování'], ['agent', 'Agent pro Windows'], ['uzivatele', 'Uživatelé'], ['nastaveni', 'Nastavení'], ['zalohy', 'Zálohy']]],
 ];
@@ -1267,7 +1317,7 @@ async function deviceDetail(main, id, viewId) {
       ['SMBIOS', sys.smbios], ['Zavádění systému', (x.security || {}).boot_mode],
       ['Základní deska', [sys.board_manufacturer, sys.board_model].filter(Boolean).join(' ')], ['Sériové číslo desky', sys.board_serial],
       ['Operační systém', d.os_name], ['Verze', d.os_version], ['Architektura', os.arch],
-      ['Instalace OS', os.install_date], ['Poslední start', os.last_boot],
+      ['Instalace OS', os.install_date ? el('span', null, fmtDate(os.install_date), ' · ', ageNode(daysSince(os.install_date))) : ''], ['Poslední start', os.last_boot],
       ['Procesor', d.cpu], ['Paměť', d.ram_mb ? (d.ram_mb / 1024).toFixed(1).replace('.', ',') + ' GB' : ''],
       ['Disky celkem', d.disk_gb ? d.disk_gb + ' GB' : ''],
       ['IP adresa', d.ip], ['MAC adresa', d.mac], ['Otevřené porty', d.open_ports], ['Doména', d.domain], ['FQDN', d.fqdn],
@@ -1317,6 +1367,7 @@ async function deviceDetail(main, id, viewId) {
     }],
     ['sec', 'Zabezpečení', (box) => {
       const s = x.security;
+      box.append(securityChecksCard(d, () => { S.nextTab = 'sec'; route(); }));
       if (!s) { box.append(el('div', { class: 'note-box info' }, 'Údaje o zabezpečení zatím chybí – počkejte na další inventuru agenta (verze 1.1.0 a novější).')); return; }
       const yn = (v) => (v == null || v === '' ? '' : el('span', { class: 'badge ' + (v === true || v === 'ano' || v === 'zapnuto' ? 'ok' : 'warn') }, v === true ? 'ano' : v === false ? 'ne' : v));
       const bl = (s.bitlocker || []).map((v) => v.drive + ' ' + (v.protected ? 'chráněno' : 'nechráněno')).join(', ');
@@ -1341,8 +1392,22 @@ async function deviceDetail(main, id, viewId) {
         el('div', { class: 'card' }, el('h3', null, 'Licenční klíč uložený v BIOSu'), kv([
           ['Klíč', admin ? l.oem_key : (l.windows_text ? '(zobrazuje jen administrátor)' : '')], ['Popis', l.oem_description], ['Windows', l.windows_text]])),
         section('Aktivované produkty (Windows, Office)', simpleTable(['Druh', 'Název', 'Stav', 'Poslední znaky klíče', 'Kanál', 'KMS server'],
-          (l.products || []).map((p) => [p.kind, p.name, el('span', { class: 'badge ' + (p.status_code === 1 ? 'ok' : 'warn') }, p.status), p.partial_key, p.channel, p.kms_server]),
-          'Žádný aktivovaný produkt nebyl nalezen')));
+          (l.products || []).map((p) => {
+            // předplatné Microsoft 365 je vázané na uživatele: stav podle přihlášeného účtu v Office, ne podle licenční služby PC
+            const sub = p.kind === 'Office' && /O365|Microsoft ?365|Subscription/i.test((p.name || '') + ' ' + (p.description || ''));
+            if (!sub) return [p.kind, p.name, el('span', { class: 'badge ' + (p.status_code === 1 ? 'ok' : 'warn') }, p.status), p.partial_key, p.channel, p.kms_server];
+            const act = (l.office_accounts || []).filter((a) => !a.signed_out);
+            let badge;
+            if (act.length) badge = el('span', { class: 'badge ok', title: act.map((a) => a.email).join(', ') }, 'aktivováno uživatelem');
+            else if (p.status_code === 1) badge = el('span', { class: 'badge ok' }, p.status);
+            else if (l.office_accounts) badge = el('span', { class: 'badge warn', title: 'V Office na tomto počítači není přihlášen žádný účet; předplatné se aktivuje přihlášením uživatele.' }, 'nikdo není přihlášen');
+            else badge = el('span', { class: 'badge warn', title: 'Předplatné je vázané na uživatele; údaj o přihlášených účtech dodá agent 2.4.0 a novější.' }, p.status);
+            return ['Office (předplatné na uživatele)', p.name, el('span', null, badge, act.length ? el('div', { class: 'small muted' }, act.map((a) => a.email).join(', ')) : null),
+              p.partial_key, 'Předplatné', ''];
+          }),
+          'Žádný aktivovaný produkt nebyl nalezen')),
+        l.office_accounts && l.office_accounts.length ? section('Office: účty přihlášené na tomto počítači', simpleTable(['Účet', 'Profil Windows', 'Stav'],
+          l.office_accounts.map((a) => [a.email, a.profile, el('span', { class: 'badge ' + (a.signed_out ? '' : 'ok') }, a.signed_out ? 'odhlášen' : 'přihlášen')]))) : null);
     }],
     ['net', 'Síť', (box) => {
       const n = x.network || {};
@@ -1393,7 +1458,7 @@ async function deviceDetail(main, id, viewId) {
     ['hist', 'Změny softwaru', (box) => box.append(simpleTable(['Čas', 'Událost', 'Software', 'Verze'],
       d.sw_changes.map((c) => [fmtDate(c.ts), el('span', { class: 'badge ' + (ACTION_BADGE[c.action] || '') }, c.action), c.name, c.version]),
       'Zatím žádné změny'))],
-  ].filter(Boolean));
+  ].filter(Boolean), (() => { const t = S.nextTab; S.nextTab = null; return t || undefined; })());
   S.live = (ev) => {
     if ((ev.type === 'usb' || ev.type === 'inventory') && String(ev.device_id) === String(id) && !document.querySelector('.overlay')) {
       const active = document.activeElement;
@@ -1523,6 +1588,185 @@ async function viewEditor(view) {
     if (location.hash.startsWith('#/pohled')) route(); else location.hash = '#/pohledy';
   } }], true);
 }
+
+// --------------------------------------------------------------- Security
+const SEC_SHORT = { bitlocker: 'Šifr.', antivirus: 'AV', firewall: 'FW', updates: 'Akt.', os: 'OS', rdp: 'RDP', disk: 'Disk', agent: 'Agent' };
+const SEC_RANK = { err: 3, warn: 2, exc: 1, ok: 1, none: 0 };
+function secText(key, c) {
+  if (c.st === 'exc') return S.lang === 'en' ? 'OK-E' : 'OK-V';
+  if (key === 'updates' && c.days != null) return fmtAge(c.days);
+  return c.text || '';
+}
+function secTitle(label, key, c) {
+  const parts = [T(label)];
+  if (key === 'updates' && c.days != null) parts.push(fmtAgeFull(c.days));
+  else if (c.text) parts.push(T(c.text));
+  if (c.hint) parts.push(T(c.hint));
+  if (c.st === 'exc') {
+    parts.push(T('Výjimka') + ': ' + (c.note || '–') + (c.by ? ' (' + c.by + (c.ts ? ', ' + String(c.ts).slice(0, 10) : '') + ')' : ''));
+  }
+  return parts.join(' · ');
+}
+function secCell(key, label, c) {
+  return el('span', { class: 'sec-cell ' + c.st, title: secTitle(label, key, c) }, el('span', { class: 't' }, secText(key, c) || '—'));
+}
+const secCountText = (err, warn) => {
+  const en = S.lang === 'en';
+  const e = en ? (err === 1 ? 'error' : 'errors') : (err === 1 ? 'chyba' : (err >= 2 && err <= 4 ? 'chyby' : 'chyb'));
+  const w = en ? (warn === 1 ? 'warning' : 'warnings') : 'varování';
+  return [err ? err + ' ' + e : '', warn ? warn + ' ' + w : ''].filter(Boolean).join(' · ');
+};
+const secSev = (lv) => (S.lang === 'en' ? (lv === 'err' ? 'Error' : 'Warning') : (lv === 'err' ? 'Chyba' : 'Varování'));
+
+// karta "Zabezpeceni" u PC: 8 zasadnich kontrol, doporuceni a vyjimky
+function securityChecksCard(d, reload) {
+  const ev = d.security_eval;
+  if (!ev) return null;
+  const labels = { bitlocker: 'Šifrování disku (BitLocker)', antivirus: 'Antivirus', firewall: 'Firewall', updates: 'Aktualizace Windows',
+    os: 'Podpora operačního systému', rdp: 'Vzdálená plocha (RDP)', disk: 'Disk (S.M.A.R.T.)', agent: 'Spojení s agentem' };
+  const cs = Object.entries(ev.checks);
+  const err = cs.filter(([, c]) => c.st === 'err').length, warn = cs.filter(([, c]) => c.st === 'warn').length;
+  const admin = isAdmin();
+  const setExc = (key) => {
+    const note = el('input', { placeholder: 'Důvod výjimky (např. schváleno vedením)' });
+    modal('Výjimka: ' + labels[key], el('div', null, el('p', null, 'Kontrola se označí jako výjimka (OK-V) a nebude se počítat jako problém. Výjimku můžete kdykoli zrušit.'),
+      field('Poznámka', note)),
+    [{ label: 'Zrušit' }, { label: 'Uložit výjimku', primary: true, onclick: async () => {
+      await api('PUT', '/api/security/exception', { device_id: d.id, check: key, note: note.value }); reload();
+    } }]);
+  };
+  const delExc = async (key) => { await api('DELETE', '/api/security/exception?device_id=' + d.id + '&check=' + key); reload(); };
+  return el('div', { class: 'card' }, el('div', { class: 'row' }, el('h3', null, 'Zabezpečení: základní kontroly'),
+    el('span', { class: 'right' }, err ? el('span', { class: 'badge bad' }, secCountText(err, 0)) : null,
+      warn ? el('span', { class: 'badge warn' }, secCountText(0, warn)) : null,
+      !err && !warn ? el('span', { class: 'badge ok' }, 'v pořádku') : null)),
+  el('div', { class: 'sec-checks' }, cs.map(([key, c]) => el('div', { class: 'sec-line' },
+    el('span', { class: 'sec-name' }, labels[key] || key),
+    el('span', { class: 'sec-val' }, secCell(key, labels[key] || key, c)),
+    el('span', { class: 'sec-hint small muted' }, c.st === 'exc' ? [T('Výjimka') + ': ' + (c.note || '–')] : (c.hint ? [c.hint] : '')),
+    admin ? el('span', { class: 'sec-act' }, c.st === 'exc'
+      ? el('button', { class: 'ghost', onclick: () => delExc(key) }, 'Zrušit výjimku')
+      : (c.st === 'err' || c.st === 'warn' ? el('button', { class: 'ghost', onclick: () => setExc(key) }, 'Výjimka') : null)) : null))));
+}
+
+PAGES.security = async (main, parts, params) => {
+  pageHead(main, 'Security', 'Zásadní bezpečnostní kontroly počítačů a serverů');
+  const [data, grp] = await Promise.all([api('GET', '/api/security'), api('GET', '/api/groups').catch(() => ({ groups: [] }))]);
+  const checks = data.checks;
+  const flt = { f: params.get('f') || 'all', t: params.get('t') || '', c: params.get('c') || '', g: params.get('g') || '', q: params.get('q') || '',
+    sort: params.get('s') || '', dir: params.get('d') === 'asc' ? 1 : -1 };
+  let show;
+  let tabKey = parts[0] === 'matice' ? 'matice' : 'prehled';
+  const sync = () => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of [['f', flt.f === 'all' ? '' : flt.f], ['t', flt.t], ['c', flt.c], ['g', flt.g], ['q', flt.q], ['s', flt.sort], ['d', flt.sort && flt.dir === 1 ? 'asc' : '']]) if (v) qs.set(k, v);
+    history.replaceState(null, '', '#/security/' + tabKey + (qs.toString() ? '?' + qs.toString() : ''));
+  };
+  const open = (r) => { location.hash = '#/zarizeni/' + r.id; };
+  const label = (k) => (checks.find((c) => c.key === k) || {}).label || k;
+  const chip = (text, on, fn, count) => el('button', { class: 'flag' + (on ? ' on' : ''), onclick: fn }, text, count != null ? el('span', { class: 'count' }, ' ' + count) : null);
+
+  // --- Prehled
+  const overviewTab = (box) => {
+    tabKey = 'prehled'; sync();
+    const t = data.total || 0;
+    const w = (n) => (t ? (100 * n / t).toFixed(1) : 0) + '%';
+    let mode = 'all';
+    const list = el('div', { class: 'sec-list' });
+    const bad = data.rows.filter((r) => r.level === 'err' || r.level === 'warn');
+    const draw = () => {
+      const rows = bad.filter((r) => mode === 'all' || (mode === 'err' && r.level === 'err') || (mode === 'srv' && r.section === 'Servery') || (mode === 'pc' && r.section === 'Počítače'));
+      list.replaceChildren(rows.length ? rows.map((r) => el('div', { class: 'sec-row ' + r.level, onclick: () => open(r) },
+        el('div', { class: 'sec-who' }, el('strong', null, r.name), el('div', { class: 'small muted' }, [r.user, r.os].filter(Boolean).join(' · '))),
+        el('div', { class: 'sec-pills' }, checks.filter((c) => ['err', 'warn'].includes(r.checks[c.key].st)).map((c) => el('span', { class: 'sec-pill ' + r.checks[c.key].st, title: secTitle(c.label, c.key, r.checks[c.key]) },
+          T(c.label) + ': ' + T(secText(c.key, r.checks[c.key]) || '—')))),
+        el('div', { class: 'sec-sev' }, el('span', { class: 'dot ' + (r.level === 'err' ? 'bad' : 'warn') }), secSev(r.level))))
+        : el('div', { class: 'muted pad' }, t ? 'Žádný problém – všechna zařízení jsou v pořádku' : 'Zatím nejsou žádná zařízení'));
+    };
+    const chips = el('div', { class: 'quick' });
+    const drawChips = () => chips.replaceChildren(chip('Vše problémové', mode === 'all', () => { mode = 'all'; drawChips(); draw(); }, bad.length),
+      chip('Jen chyby', mode === 'err', () => { mode = 'err'; drawChips(); draw(); }, data.err),
+      chip('Stanice', mode === 'pc', () => { mode = 'pc'; drawChips(); draw(); }),
+      chip('Servery', mode === 'srv', () => { mode = 'srv'; drawChips(); draw(); }));
+    drawChips(); draw();
+    box.append(el('div', { class: 'sec-top' },
+      el('div', { class: 'card sec-score' }, el('div', { class: 'muted' }, 'V pořádku'),
+        el('div', { class: 'sec-big' }, String(data.ok), el('span', { class: 'muted' }, ' ' + (S.lang === 'en' ? 'of' : 'z') + ' ' + t)),
+        el('div', { class: 'sec-bar' }, el('i', { class: 'ok', style: 'width:' + w(data.ok) }), el('i', { class: 'warn', style: 'width:' + w(data.warn) }), el('i', { class: 'err', style: 'width:' + w(data.err) })),
+        el('div', { class: 'small muted' }, secCountText(data.err, data.warn) || 'bez problémů')),
+      el('div', { class: 'sec-cards' }, checks.map((c) => {
+        const s = data.summary[c.key], n = s.err + s.warn;
+        return el('button', { class: 'sec-card ' + (s.err ? 'err' : (s.warn ? 'warn' : 'ok')), onclick: () => { flt.c = c.key; flt.f = 'all'; show('matice'); },
+          title: 'Zobrazit v matici' },
+        el('span', { class: 'small muted' }, c.label), el('span', { class: 'sec-num' }, String(n)),
+        el('span', { class: 'small' }, secCountText(s.err, s.warn) || 'v pořádku'), s.exc ? el('span', { class: 'small muted' }, T('výjimky') + ': ' + s.exc) : null);
+      }))),
+    el('h3', { class: 'sec-h' }, 'Co je špatně'), chips, list);
+  };
+
+  // --- Matice
+  const matrixTab = (box) => {
+    tabKey = 'matice'; sync();
+    const q = el('input', { type: 'search', placeholder: 'Hledat zařízení nebo uživatele…', 'aria-label': 'Hledat zařízení', value: flt.q });
+    const bar = el('div', { class: 'quick' });
+    const holder = el('div', { class: 'sec-matrix card' });
+    const groupSel = el('select', { 'aria-label': 'Skupina', onchange: () => { flt.g = groupSel.value; draw(); } },
+      el('option', { value: '' }, 'Skupina: všechny'), (grp.groups || []).map((g) => el('option', { value: String(g.id), selected: String(g.id) === flt.g }, g.name)));
+    const filtered = () => {
+      const needle = flt.q.toLowerCase();
+      let rows = data.rows.filter((r) => (flt.f === 'all' || (flt.f === 'bad' && (r.level === 'err' || r.level === 'warn')) || (flt.f === 'err' && r.level === 'err'))
+        && (!flt.t || r.section === flt.t) && (!flt.g || r.groups.includes(Number(flt.g)))
+        && (!needle || (r.name + ' ' + r.user + ' ' + r.ip + ' ' + r.os).toLowerCase().includes(needle))
+        && (!flt.c || ['err', 'warn'].includes(r.checks[flt.c].st)));
+      if (flt.sort === 'name') rows = rows.slice().sort((a, b) => flt.dir * a.name.localeCompare(b.name, S.lang));
+      else if (flt.sort) rows = rows.slice().sort((a, b) => flt.dir * (SEC_RANK[a.checks[flt.sort].st] - SEC_RANK[b.checks[flt.sort].st]) || a.name.localeCompare(b.name));
+      return rows;
+    };
+    const exportCsv = () => {
+      const safe = (v) => { v = String(v == null ? '' : v); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };
+      const head = [T('Zařízení'), T('Uživatel'), T('Typ'), ...checks.map((c) => T(c.label))];
+      const lines = [head.map(safe).join(';')].concat(filtered().map((r) => [r.name, r.user, r.section, ...checks.map((c) => {
+        const x = r.checks[c.key]; return secText(c.key, x) + (x.st === 'exc' ? '' : (x.st === 'err' ? ' [!]' : (x.st === 'warn' ? ' [?]' : '')));
+      })].map(safe).join(';')));
+      const a = el('a', { href: URL.createObjectURL(new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' })), download: 'security.csv' });
+      document.body.append(a); a.click(); a.remove();
+    };
+    const sortBy = (k) => { if (flt.sort === k) flt.dir = -flt.dir; else { flt.sort = k; flt.dir = k === 'name' ? 1 : -1; } draw(); };
+    const draw = () => {
+      sync();
+      const rows = filtered();
+      const nBad = data.rows.filter((r) => r.level === 'err' || r.level === 'warn').length;
+      bar.replaceChildren(chip('Vše', flt.f === 'all', () => { flt.f = 'all'; draw(); }, data.total),
+        chip('Problémové', flt.f === 'bad', () => { flt.f = 'bad'; draw(); }, nBad), chip('Jen chyby', flt.f === 'err', () => { flt.f = 'err'; draw(); }, data.err),
+        chip('Stanice', flt.t === 'Počítače', () => { flt.t = flt.t === 'Počítače' ? '' : 'Počítače'; draw(); }),
+        chip('Servery', flt.t === 'Servery', () => { flt.t = flt.t === 'Servery' ? '' : 'Servery'; draw(); }),
+        grp.groups && grp.groups.length ? groupSel : null,
+        flt.c ? el('button', { class: 'flag on', onclick: () => { flt.c = ''; draw(); } }, T('Kontrola') + ': ' + T(label(flt.c)) + ' ×') : null,
+        el('span', { class: 'muted small' }, T('Zobrazeno') + ' ' + rows.length + ' ' + (S.lang === 'en' ? 'of' : 'z') + ' ' + data.total));
+      const head = (k, text, short) => el('th', { class: 'sortable' + (flt.sort === k ? ' sorted' : ''), onclick: () => sortBy(k), title: text },
+        el('span', { class: 'full' }, text), el('span', { class: 'short' }, short || text), flt.sort === k ? (flt.dir === 1 ? ' ▲' : ' ▼') : '');
+      const table = el('table', { class: 'sec-table' },
+        el('thead', null, el('tr', null, head('name', 'Zařízení'), checks.map((c) => head(c.key, c.label, SEC_SHORT[c.key])))),
+        el('tbody', null, rows.map((r) => el('tr', { class: 'clickable', onclick: () => open(r) },
+          el('td', { class: 'sec-dev' }, el('div', null, r.name), el('div', { class: 'small muted' }, r.user)),
+          checks.map((c) => el('td', null, secCell(c.key, c.label, r.checks[c.key])))))),
+        el('tfoot', null, el('tr', null, el('td', null, 'Problémů'), checks.map((c) => {
+          const n = rows.filter((r) => ['err', 'warn'].includes(r.checks[c.key].st)).length;
+          const e = rows.filter((r) => r.checks[c.key].st === 'err').length;
+          return el('td', null, el('span', { class: 'sec-cell ' + (e ? 'err' : (n ? 'warn' : 'ok')) + ' clickable', title: 'Zobrazit jen problémová zařízení',
+            onclick: () => { flt.c = flt.c === c.key ? '' : c.key; draw(); } }, el('span', null, String(n))));
+        }))));
+      holder.replaceChildren(rows.length ? table : el('div', { class: 'muted pad' }, 'Žádné zařízení neodpovídá filtru'),
+        el('div', { class: 'sec-legend small muted' }, el('span', { class: 'sec-cell ok' }, 'v pořádku'), el('span', { class: 'sec-cell warn' }, 'varování'),
+          el('span', { class: 'sec-cell err' }, 'chyba'), el('span', { class: 'sec-cell none' }, 'nezjištěno'),
+          el('span', { class: 'sec-cell exc' }, S.lang === 'en' ? 'OK-E exception' : 'OK-V výjimka')));
+    };
+    q.addEventListener('input', () => { flt.q = q.value; draw(); });
+    box.append(el('div', { class: 'toolbar' }, q, el('button', { onclick: exportCsv }, 'Export CSV')), bar, holder);
+    draw();
+  };
+  show = tabbed(main, [['prehled', 'Přehled', overviewTab], ['matice', 'Matice', matrixTab]], tabKey);
+};
 
 PAGES.pohledy = async (main) => {
   await refreshViews();
@@ -1790,6 +2034,10 @@ PAGES.nastaveni = async (main) => {
         text('agent_problems_days', 'Uchovávat problémy agentů (dní)', null, 'number'),
         text('agent_error_days', 'Chyba agenta se z varování mění na „chybu“ po (dnech opakování)', null, 'number')),
       el('div', { class: 'hint' }, 'Sledování zapisuje jména souborů zaměstnanců. Před zapnutím zajistěte vnitřní směrnici o monitoringu a informování zaměstnanců (§ 316 zákoníku práce). Výchozí stav je vypnuto.')),
+    el('div', { class: 'card' }, el('h2', null, 'Security'),
+      el('div', { class: 'form-grid' }, text('sec_update_warn_days', 'Aktualizace Windows: varování od (dní od poslední opravy)', null, 'number'),
+        text('sec_update_err_days', 'Aktualizace Windows: chyba od (dní od poslední opravy)', null, 'number'),
+        text('sec_os_warn_days', 'Podpora OS: varovat předem (dní před koncem podpory)', null, 'number'))),
     el('div', { class: 'card' }, el('h2', null, 'Active Directory'),
       check('ad_enabled', 'Pravidelně synchronizovat počítače a uživatele z domény'),
       el('div', { class: 'form-grid' },
