@@ -581,15 +581,36 @@ function Get-Software {
 }
 
 function Get-RemoteInfo {
-    # je zapnuta vzdalena plocha (RDP) a vzdaleny PowerShell (WinRM)?
+    # skutecny stav vzdalene plochy (RDP): bezi sluzba a skutecne se posloucha na portu RDP? (ne jen nastaveni v registru / GPO)
+    # a vzdaleneho PowerShellu (WinRM)
     $out = @{}
+    $port = 3389
     try {
         $deny = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -ErrorAction Stop).fDenyTSConnections
-        $out.rdp = ([int]$deny -eq 0)
+        $out.rdp_cfg = ([int]$deny -eq 0)
     } catch {}
     try {
-        $nla = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction Stop).UserAuthentication
-        $out.rdp_nla = ([int]$nla -eq 1)
+        $pn = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction Stop).PortNumber
+        if ($pn) { $port = [int]$pn }
+    } catch {}
+    $listenAll = @()
+    try { $listenAll = @([Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() | ForEach-Object { [int]$_.Port }) } catch {}
+    $svcOk = $null
+    try { $svcOk = ((Get-Service -Name TermService -ErrorAction Stop).Status -eq 'Running') } catch {}
+    $out.rdp_port = $port
+    $out.rdp_service = $svcOk
+    $out.rdp_listening = ($listenAll -contains $port)
+    # skutecne chovani = poslouchani na portu (pri nezjistitelnem seznamu portu se nic netvrdi)
+    if ($listenAll.Count -gt 0) { $out.rdp = [bool]$out.rdp_listening }
+    # je port povolen ve firewallu (pravidlo pro prichozi RDP)?
+    try {
+        $rules = @(Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow -ErrorAction Stop | Where-Object { $_.DisplayGroup -match 'Remote Desktop|Vzd.len. plocha' -or $_.DisplayName -match 'Remote Desktop|Vzd.len. plocha' })
+        $out.rdp_fw = ($rules.Count -gt 0)
+    } catch {}
+    try {
+        $nla = Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' 'UserAuthentication'
+        if ($null -eq $nla) { $nla = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -ErrorAction Stop).UserAuthentication }
+        if ($null -ne $nla) { $out.rdp_nla = ([int]$nla -eq 1) }
     } catch {}
     try {
         $svc = Get-Service -Name WinRM -ErrorAction Stop

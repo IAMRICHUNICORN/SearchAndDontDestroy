@@ -40,5 +40,11 @@
   "date": "2026-11-20",
   "legacy": false,
   "notes": "Microsoft 365 / Office: hlásí účty přihlášené v Office (i v odhlášených profilech) a verzi Office, aby se předplatné na uživatele hodnotilo správně."
+ },
+ {
+  "version": "2.4.1",
+  "date": "2026-11-21",
+  "legacy": false,
+  "notes": "Vzdálená plocha (RDP): hlásí skutečný stav (běží služba a poslouchá se na portu RDP, povolení ve firewallu, skutečně vynucené NLA), ne jen nastavení v registru nebo z GPO."
  }
 ]

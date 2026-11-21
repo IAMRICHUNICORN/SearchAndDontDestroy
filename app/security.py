@@ -147,19 +147,27 @@ def check_os(dev, th, today):
 
 
 def check_rdp(sec, remote):
-    rdp = _bool(remote.get("rdp"))
-    nla = _bool(remote.get("rdp_nla"))
-    if rdp is None:
-        rdp = _bool(sec.get("rdp_enabled"))
+    """RDP podle skutecneho stavu (agent 2.4.1+): posloucha se na portu RDP. Starsi agent skutecny stav neposila -> neovereno."""
+    listening = remote.get("rdp_listening")
+    if listening is None or "rdp_port" not in remote:
+        return _c("none", "neověřeno", "Skutečný stav vzdálené plochy zatím nikdo nezjistil: počkejte na agenta 2.4.1 nebo novější")
+    listening = _bool(listening)
+    cfg = _bool(remote.get("rdp_cfg"))
+    if cfg is None:
+        cfg = _bool(sec.get("rdp_enabled"))
+    nla = _bool(sec.get("rdp_nla"))
     if nla is None:
-        nla = _bool(sec.get("rdp_nla"))
-    if rdp is None:
-        return _c("none", "?")
-    if not rdp:
-        return _c("ok", "vypnuta")
+        nla = _bool(remote.get("rdp_nla"))
+    if not listening:
+        hint = ""
+        if cfg:
+            hint = "V nastavení je vzdálená plocha povolená, ale nikdo na portu neposlouchá (služba neběží nebo se ještě nespustila)"
+        return _c("ok", "vypnuta", hint)
+    if _bool(remote.get("rdp_fw")) is False:
+        return _c("ok", "blokuje firewall", "Vzdálená plocha běží, ale firewall nemá povolené příchozí pravidlo, zvenku se nepřipojíte")
     if nla is False:
-        return _c("err", "bez NLA", "Vzdálená plocha je zapnutá bez ověření NLA")
-    return _c("warn", "zapnuta", "Vzdálená plocha je zapnutá (ověření NLA je zapnuté)")
+        return _c("err", "bez NLA", "Vzdálená plocha běží bez ověření NLA")
+    return _c("warn", "zapnuta", "Vzdálená plocha běží (ověření NLA je zapnuté)")
 
 
 def check_disk(sec):
@@ -288,3 +296,28 @@ def overview(conn):
             "ok": sum(1 for x in out if x["level"] == "ok"), "err": sum(1 for x in out if x["level"] == "err"),
             "warn": sum(1 for x in out if x["level"] == "warn"), "checks": [{"key": k, "label": l} for k, l in CHECKS],
             "thresholds": th}
+
+
+# poradi, ve kterem se vybira nejzavaznejsi problem pro sloupec Security (agent se hodnoti zvlast: sloupec Chyba agenta)
+PROBLEM_ORDER = ["os", "bitlocker", "antivirus", "firewall", "updates", "rdp", "disk"]
+LEVEL_CS = {"err": "chyba", "warn": "varování", "ok": "v pořádku", "none": ""}
+
+
+def refresh_temp(conn):
+    """Naplni docasnou tabulku se stavem Security (bez kontroly agenta), aby ji mohl seznam zarizeni radit a filtrovat."""
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS sec_tmp (device_id INTEGER PRIMARY KEY, level TEXT, problem TEXT)")
+    conn.execute("DELETE FROM temp.sec_tmp")
+    labels = dict(CHECKS)
+    for r in overview(conn)["rows"]:
+        cs = {k: v for k, v in r["checks"].items() if k != "agent"}
+        bad = [(k, cs[k]) for k in PROBLEM_ORDER if k in cs and cs[k]["st"] in ("err", "warn")]
+        errs = [b for b in bad if b[1]["st"] == "err"]
+        main = (errs or bad or [None])[0]
+        lv = "err" if errs else ("warn" if bad else level(cs))
+        text = ""
+        if main:
+            text = labels[main[0]] + ((": " + main[1]["text"]) if main[1].get("text") and main[0] not in ("updates",) else "")
+            if len(bad) > 1:
+                text += " +%d" % (len(bad) - 1)
+        conn.execute("INSERT OR REPLACE INTO temp.sec_tmp (device_id, level, problem) VALUES (?, ?, ?)",
+                     (r["id"], LEVEL_CS.get(lv, ""), text))

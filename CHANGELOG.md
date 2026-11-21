@@ -2,6 +2,15 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.11.1
+- **Agent 2.4.1** (rozešle se sám do 5 minut od aktualizace serveru; do té doby u starších agentů zůstane RDP „neověřeno“).
+  Vzdálená plocha (RDP) se hlásí podle **skutečného stavu**: běží služba a posloucháme na portu RDP, je povolené pravidlo ve firewallu a jak je skutečně vynucené ověření NLA. Dřív se četlo jen nastavení v registru, a to se mohlo lišit od reality (GPO).
+- **RDP má jeden údaj všude:** sloupec a filtr „RDP zapnuto“, počítadlo, kontrola v Security i karta PC. Starší agent = „neověřeno“.
+- **Karta PC → Zabezpečení:** horní karta „Základní kontroly“ je pryč. Stav kontrol (OK / varování / chyba) a tlačítko „Výjimka“ jsou přímo u řádků karty „Stav zabezpečení“. Přibyly řádky Podpora operačního systému a Spojení s agentem.
+- **Seznam Zařízení přehledněji:** řádky bez zalamování (zkrácený OS), název napevno vlevo a vodorovný posuvník, sloupec Agent (stav, kontakt, verze) v jednom řádku, nové sloupce IP, Chyba agenta (nejzávažnější problém) a Security (stav a nejzávažnější problém) zvlášť.
+- **Filtry:** hlavní jsou Online, Offline, Bez agenta, Chyba agenta, Security; ostatní pod „Další filtry“.
+- **Mobil:** seznam zařízení se na úzké obrazovce zobrazí jako karty.
+
 ## 1.11.0
 - **Agent 2.4.0** (cíl „Nejnovější“ ho rozešle do 5 minut od aktualizace serveru; chcete-li ho nejdřív vyzkoušet, nastavte cíl 2.3.0 a 2.4.0 připněte jednomu PC).
   Nově hlásí účty přihlášené v Office (Microsoft 365) a verzi Office. Server funguje i se staršími agenty (údaje o Office pak chybí).

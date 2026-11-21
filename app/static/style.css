@@ -320,3 +320,29 @@ table.plain th, table.plain td { text-align: left; padding: 4px 8px; border-bott
   .sec-line { grid-template-columns: 1fr auto; }
   .sec-line .sec-hint { grid-column: 1 / -1; }
 }
+
+/* Zarizeni: kompaktni tabulka bez zalamovani, nazev napevno vlevo, vodorovny posuvnik */
+.table-wrap.compact td { white-space: nowrap; max-width: 230px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.table-wrap.compact th { white-space: nowrap; }
+.table-wrap.compact th:nth-child(2), .table-wrap.compact td:nth-child(2) { position: sticky; left: 40px; background: var(--panel); z-index: 1; box-shadow: 1px 0 0 var(--line); }
+.table-wrap.compact th:nth-child(2) { background: var(--panel-2); z-index: 2; }
+.table-wrap.compact tbody tr:hover td:nth-child(2) { background: var(--panel-2); }
+.quick.extra { margin-top: -4px; }
+/* karta Stav zabezpeceni */
+.sec-line.st { grid-template-columns: minmax(170px, 1fr) minmax(0, 2.4fr) 90px 120px; }
+.sec-line.st .sec-stat { text-align: left; }
+@media (max-width: 700px) {
+  .sec-line.st { grid-template-columns: 1fr auto; }
+  .sec-line.st .sec-val2 { grid-column: 1 / -1; }
+  /* seznam zarizeni na mobilu: karty misto tabulky */
+  .table-wrap.compact { border: 0; background: none; overflow: visible; }
+  .table-wrap.compact table, .table-wrap.compact tbody { display: block; }
+  .table-wrap.compact thead { display: none; }
+  .table-wrap.compact tr { display: flex; flex-wrap: wrap; gap: 2px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; position: relative; }
+  .table-wrap.compact td { display: none; border: 0; padding: 0; max-width: none; position: static !important; box-shadow: none !important; background: none !important; }
+  .table-wrap.compact td[data-col="hostname"] { display: block; flex: 1 1 100%; font-weight: 600; font-size: 15px; }
+  .table-wrap.compact td[data-col="logged_user"], .table-wrap.compact td[data-col="os_name"], .table-wrap.compact td[data-col="agent_state"],
+  .table-wrap.compact td[data-col="agent_health"], .table-wrap.compact td[data-col="agent_issue"], .table-wrap.compact td[data-col="sec_level"],
+  .table-wrap.compact td[data-col="sec_problem"], .table-wrap.compact td[data-col="online"] { display: block; font-size: 12px; }
+  .table-wrap.compact td.chk { display: block; position: absolute !important; right: 8px; top: 8px; width: auto; }
+}

@@ -291,9 +291,9 @@ ENTITIES = {
                                "(SELECT COUNT(*) FROM software s WHERE s.device_id = d.id)", "num"),
             "usb_count": ("Připojená USB",
                           "(SELECT COUNT(*) FROM usb_current c WHERE c.device_id = d.id)", "num"),
-            "rdp": ("RDP zapnuto (vzdálená plocha)",
-                    "CASE WHEN json_extract(d.details, '$.remote.rdp') IS NULL THEN NULL "
-                    "WHEN json_extract(d.details, '$.remote.rdp') IN (1, 'true') THEN 1 ELSE 0 END", "bool"),
+            "rdp": ("RDP zapnuto (vzdálená plocha, skutečný stav)",
+                    "CASE WHEN json_extract(d.details, '$.remote.rdp_listening') IS NULL THEN NULL "
+                    "WHEN json_extract(d.details, '$.remote.rdp_listening') IN (1, 'true') THEN 1 ELSE 0 END", "bool"),
             "winrm": ("Vzdálený PowerShell (WinRM)",
                       "CASE WHEN json_extract(d.details, '$.remote.winrm') IS NULL THEN NULL "
                       "WHEN json_extract(d.details, '$.remote.winrm') IN (1, 'true') THEN 1 ELSE 0 END", "bool"),
@@ -351,6 +351,11 @@ ENTITIES = {
             "agent_pinned": ("Verze agenta připnuta", "CASE WHEN COALESCE(d.agent_target, '') <> '' THEN 1 ELSE 0 END", "bool"),
             "agent_health": ("Zdraví agenta", _HEALTH, "text"),
             "agent_health_reason": ("Důvod stavu agenta", _HEALTH_REASON, "text"),
+            "agent_issue": ("Chyba agenta (nejzávažnější problém)",
+                            "CASE WHEN " + _HEALTH + " IN ('chyba', 'varování') THEN " + _HEALTH_REASON + " ELSE '' END", "text"),
+            "sec_level": ("Security: stav", "COALESCE((SELECT t.level FROM temp.sec_tmp t WHERE t.device_id = d.id), '')", "text"),
+            "sec_problem": ("Security: nejzávažnější problém",
+                            "COALESCE((SELECT t.problem FROM temp.sec_tmp t WHERE t.device_id = d.id), '')", "text"),
             "agent_error": ("Poslední chyba agenta", "d.agent_error", "text"),
             "agent_error_at": ("Čas poslední chyby agenta", "d.agent_error_at", "date"),
             "agent_beat": ("Poslední kontakt agenta", "d.agent_beat", "date"),
@@ -802,6 +807,10 @@ def run_query(conn, entity, columns=None, filters=None, search="", sort="", sort
     """Vraci (sloupce, radky, celkovy pocet). Radky obsahuji navic _id a _device_id."""
     ent = _resolve(conn, ENTITIES[entity])
     cols = clean_columns(entity, columns)
+    if entity == "devices" and (any(k.startswith("sec_") for k in cols) or str(sort).startswith("sec_")
+                                or any(str((f or {}).get("col", "")).startswith("sec_") for f in (filters or []))):
+        from . import security
+        security.refresh_temp(conn)
     params = []
     where = []
     for f in clean_filters(entity, filters):
@@ -903,7 +912,10 @@ def agent_summary(conn):
     out["pinned"] = int(conn.execute("SELECT COUNT(*) FROM devices WHERE COALESCE(agent_target, '') <> ''").fetchone()[0])
     orow = conn.execute("SELECT COALESCE(SUM(online = 1), 0) AS on_n, COALESCE(SUM(online = 0), 0) AS off_n FROM devices").fetchone()
     out["online"], out["offline"] = int(orow["on_n"]), int(orow["off_n"])
-    out["rdp"] = int(conn.execute("SELECT COUNT(*) FROM devices WHERE json_extract(details, '$.remote.rdp') IN (1, 'true')").fetchone()[0])
+    from . import security
+    security.refresh_temp(conn)
+    out["sec_bad"] = int(conn.execute("SELECT COUNT(*) FROM temp.sec_tmp WHERE level IN ('chyba', 'varování')").fetchone()[0])
+    out["rdp"] = int(conn.execute("SELECT COUNT(*) FROM devices WHERE json_extract(details, '$.remote.rdp_listening') IN (1, 'true')").fetchone()[0])
     return out
 
 

@@ -5,8 +5,18 @@ Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CH
 
 ## Cekaji na dalsi vydani
 
-5. Moderni a mobilni rozhrani celeho programu (responzivni, automaticky podle sirky, filtry a pohledy jako priorita), volitelne ikona na plochu (PWA).
-   Zatim NEIMPLEMENTOVANO (doporuceno jako samostatne vydani; mobilni podoba je zatim jen u sekce Security).
+(zatim nic)
+
+## ToDo (pozdeji - az bude odladen zaklad; neimplementovat bez pokynu)
+- Moderni a mobilni rozhrani celeho programu: responzivni (automaticky podle sirky), menu do ikony a spodni lista na telefonu,
+  karty misto tabulek (Zarizeni, Software, USB, Licence), filtry a pohledy jako priorita (cipy, panel filtru zespodu),
+  volitelne ikona na plochu (PWA). Mobilni podobu zatim ma jen sekce Security. Doporuceni: po castech, zacit seznamem Zarizeni.
+- Volitelne: automaticke smazani starych falesnych USB udalosti od ctecek karet; oznameni mimo aplikaci (e-mail/chat) pri USB varovani.
+
+## Hotovo (implementovano, ceka na vydej) ve verzi 1.11.1 (agent 2.4.1, bez zmeny schematu)
+1. Agent 2.4.1: RDP podle skutecneho stavu (sluzba, port, firewall, NLA), ne podle nastaveni/GPO. Starsi agent = "neovereno".
+2. Karta PC: odstranena horni karta, stav a vyjimky v karte Stav zabezpeceni.
+3. Seznam Zarizeni: kompaktni radky, sloupce IP, Chyba agenta, Security zvlast, hlavni filtry + Dalsi filtry, mobil jako karty.
 
 ## Hotovo (vydano) ve verzi 1.11.0 (agent 2.4.0, schema 12)
 1. Format stari: CS "L M D" / EN "Y M D", velkymi pismeny (25D, 3M 12D, 2L 3M 12D), plny text po najeti mysi; razeni/filtry dle dni (os_age_days, hotfix_age).

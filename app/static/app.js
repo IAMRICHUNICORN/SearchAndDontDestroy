@@ -324,9 +324,10 @@ function cell(col, row) {
     const last = (row._beat && row._beat > (row._inv || '')) ? row._beat : row._inv;
     td.title = T((v === 'nikdy' ? 'Agent zatím neposlal žádná data' : 'Poslední kontakt: ' + fmtDate(last) + ' · poslední inventura: ' + fmtDate(row._inv)) +
       (row._agent ? ' · agent ' + row._agent : '') + (row._commr ? ' · ' + row._commr : ''));
-    return add(td, [el('span', { class: 'dot ' + AGENT_DOT[v] }), v === 'nikdy' ? 'nikdy' : (row._beat ? ['kontakt', ' ', ago(last)] : ago(row._inv)),
-      el('div', { class: 'small muted' }, v === 'nikdy' ? null : ['inventura', ' ', ago(row._inv)], v !== 'nikdy' && row._agent ? ' · ' : null,
-        row._agent ? 'agent ' + row._agent : null)]);
+    const st = row._vstat || '';
+    const verBad = st && st !== 'aktuální' && st !== 'novější';
+    return add(td, [el('span', { class: 'dot ' + AGENT_DOT[v] }), v === 'nikdy' ? 'nikdy' : ago(last),
+      row._agent ? [' ', el('span', { class: 'badge ' + (VER_BADGE[st] || '') }, row._agent), verBad ? el('span', { class: 'small muted' }, ' ' + st) : null] : null]);
   }
   if (col.key === 'agent_version') {
     const td = el('td', { class: 'nw' });
@@ -345,6 +346,28 @@ function cell(col, row) {
       td.addEventListener('click', (e) => { e.stopPropagation(); agentIssueDialog(row, v); });
     }
     return add(td, [el('span', { class: 'dot ' + (HEALTH_DOT[v] || '') }), v]);
+  }
+  if (col.key === 'agent_issue') {
+    const td = el('td', { class: 'nw' });
+    if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
+    const parts = String(v).split('; ').filter(Boolean);
+    td.title = T(String(v));
+    return add(td, [parts[0], parts.length > 1 ? el('span', { class: 'small muted' }, ' +' + (parts.length - 1)) : null]);
+  }
+  if (col.key === 'sec_level') {
+    const td = el('td', { class: 'nw' });
+    if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
+    return add(td, [el('span', { class: 'dot ' + (v === 'chyba' ? 'bad' : (v === 'varování' ? 'warn' : 'on')) }), v]);
+  }
+  if (col.key === 'sec_problem') {
+    const td = el('td', { class: 'nw' });
+    if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
+    td.title = T('Podrobnosti po rozkliknutí řádku (karta Zabezpečení)');
+    return add(td, [v]);
+  }
+  if (col.key === 'os_name' && v) {
+    const td = el('td', { class: 'nw', title: v });
+    return add(td, [String(v).replace(/^Microsoft /, '').replace(/^Windows/, 'Win')]);
   }
   if (col.key === 'groups') {
     const td = el('td');
@@ -377,6 +400,7 @@ function cell(col, row) {
       off ? el('span', { class: 'small muted' }, ' · ' + off) : null]);
   }
   if (col.key === 'offline_min') return add(el('td', { class: 'nw' }), [v == null ? el('span', { class: 'muted' }, '–') : fmtMinutes(v)]);
+  if (col.key === 'rdp' && v == null) return add(td, [el('span', { class: 'badge', title: T('Skutečný stav zatím nikdo nezjistil: počkejte na agenta 2.4.1 nebo novější') }, 'neověřeno')]);
   if (col.type === 'bool') return add(td, [el('span', { class: 'badge' + (v ? ' ok' : '') }, v ? 'ano' : 'ne')]);
   if (v == null || v === '') return td;
   if (col.key === 'action') return add(td, [el('span', { class: 'badge ' + (ACTION_BADGE[v] || '') }, v)]);
@@ -562,7 +586,7 @@ function dataTable(opts) {
         } });
       const tr = el('tr', { class: rowClick ? 'click' : '', onclick: rowClick ? () => opts.onRow(r, data) : null },
         opts.selectable ? el('td', { class: 'chk', onclick: (e) => { if (e.target === e.currentTarget) { box.click(); } e.stopPropagation(); } }, box) : null,
-        data.columns.map((c) => cell(c, r)));
+        data.columns.map((c) => { const td = cell(c, r); td.dataset.col = c.key; return td; }));
       st.trs.push({ tr, box, id: r._id });
       return tr;
     }) : [el('tr', null, el('td', { class: 'empty', colspan: data.columns.length + (opts.selectable ? 1 : 0) },
@@ -704,7 +728,7 @@ function dataTable(opts) {
   (opts.buttons || []).forEach((b) => tools.push(b));
 
   const node = el('div', null, el('div', { class: 'toolbar' }, tools), selBar, chips,
-    el('div', { class: 'table-wrap' }, el('table', null, thead, tbody)), pager);
+    el('div', { class: 'table-wrap' + (opts.compact ? ' compact' : '') }, el('table', null, thead, tbody)), pager);
   load();
   return { node, reload: load, setFilters: (f) => { st.filters = f; st.page = 1; st.all = false; load(); },
     refreshGroups: () => { st.groups = null; load(); },
@@ -992,7 +1016,7 @@ PAGES.zarizeni = async (main, parts, params) => {
   if (!isAdmin()) return PAGES.prehled(main);
   pageHead(main, 'Zařízení', 'Vše, co bylo nalezeno v doméně, v IP rozsahu nebo nahlášeno agentem',
     el('button', { onclick: () => groupManager(() => { loadGroupSel(); t.refreshGroups(); }) }, 'Skupiny'));
-  const PC_COLS = ['hostname', 'agent_state', 'agent_version', 'agent_health', 'logged_user', 'groups', 'os_name', 'model', 'online', 'ip'];
+  const PC_COLS = ['hostname', 'ip', 'logged_user', 'agent_state', 'agent_health', 'agent_issue', 'sec_level', 'sec_problem', 'os_name', 'model', 'online', 'groups'];
   const NET_COLS = ['hostname', 'device_type', 'groups', 'online', 'ip', 'mac', 'manufacturer', 'model'];
   const ALL_COLS = ['hostname', 'section', 'agent_state', 'agent_version', 'device_type', 'logged_user', 'groups', 'online', 'ip', 'os_name', 'model'];
   const SECTIONS = ['Počítače', 'Servery', 'IoT', 'Síťové prvky', 'Tiskárny'];
@@ -1005,6 +1029,7 @@ PAGES.zarizeni = async (main, parts, params) => {
     ['Tiskárny', secFilter('Tiskárny'), NET_COLS, 'ip'],
     ['Vše', [], ALL_COLS, 'hostname'],
   ];
+  const MAIN_FLAGS = new Set(['online', 'offline', 'never', 'agentissue', 'secbad']);
   const FLAGS = [
     ['online', 'Online', 'online', { col: 'online', op: 'eq', value: 'ano', tab: true }],
     ['offline', 'Offline', 'offline', { col: 'online', op: 'eq', value: 'ne', tab: true }],
@@ -1012,8 +1037,8 @@ PAGES.zarizeni = async (main, parts, params) => {
     ['stale', 'Neaktivní agent', 'stale', { col: 'agent_state', op: 'eq', value: 'neaktivní', tab: true }],
     ['ipc', 'Konflikt IP', 'ip_conflicts', { col: 'ip_conflict', op: 'eq', value: 'ano', tab: true }],
     ['oldagent', 'Zastaralý agent', 'old', { col: 'agent_ver_status', op: 'in', value: 'zastaralý,neznámá', tab: true }],
-    ['agenterr', 'Agent s chybou', 'h_bad', { col: 'agent_health', op: 'eq', value: 'chyba', tab: true }],
-    ['agentwarn', 'Agent s varováním', 'h_warn', { col: 'agent_health', op: 'eq', value: 'varování', tab: true }],
+    ['agentissue', 'Chyba agenta', 'h_issue', { col: 'agent_health', op: 'in', value: 'chyba,varování', tab: true }],
+    ['secbad', 'Security', 'sec_bad', { col: 'sec_level', op: 'in', value: 'chyba,varování', tab: true }],
     ['rdp', 'RDP zapnuto', 'rdp', { col: 'rdp', op: 'eq', value: 'ano', tab: true }],
     ['pinned', 'Verze připnuta', 'pinned', { col: 'agent_pinned', op: 'eq', value: 'ano', tab: true }],
     ['nosec', 'Bez sekce', 'no_section', { col: 'section', op: 'eq', value: '', tab: true }],
@@ -1025,7 +1050,7 @@ PAGES.zarizeni = async (main, parts, params) => {
     filters: curTab[1].concat(FLAGS.filter((f) => flags.has(f[0])).map((f) => f[3]),
       curGroup ? [{ col: 'groups', op: 'eq', value: curGroup, tab: true }] : []),
     columns: curTab[2], sort: curTab[3], sortDir: 'asc' });
-  const t = dataTable({ entity: 'devices', adhoc: true, selectable: true, sections: SECTIONS, bulk: [bulkDelete('devices', 'zařízení')],
+  const t = dataTable({ entity: 'devices', adhoc: true, compact: true, selectable: true, sections: SECTIONS, bulk: [bulkDelete('devices', 'zařízení')],
     currentSection: () => (SECTIONS.includes(curTab[0]) ? curTab[0] : null),
     onChanged: () => { summary(); loadGroupSel(); },
     onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
@@ -1071,9 +1096,18 @@ PAGES.zarizeni = async (main, parts, params) => {
   loadGroupSel();
   const info = el('div', { class: 'quick' });
   bar.append(...tabButtons);
-  info.append(el('span', { class: 'muted small' }, 'Rychlé filtry:'), ...flagButtons, el('span', { class: 'right' }, groupSel));
+  const extraBox = el('div', { class: 'quick extra' });
+  extraBox.style.display = 'none';
+  const moreBtn = el('button', { class: 'flag', 'aria-expanded': 'false', onclick: () => {
+    const open = extraBox.style.display === 'none';
+    extraBox.style.display = open ? '' : 'none'; moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    moreBtn.firstChild.textContent = T(open ? 'Další filtry ▴' : 'Další filtry ▾');
+  } }, el('span', null, T('Další filtry ▾')));
+  info.append(el('span', { class: 'muted small' }, 'Rychlé filtry:'), ...flagButtons.filter((b) => MAIN_FLAGS.has(b.dataset.flag)), moreBtn,
+    el('span', { class: 'right' }, groupSel));
+  extraBox.append(...flagButtons.filter((b) => !MAIN_FLAGS.has(b.dataset.flag)));
   const legend = el('div', { class: 'hint', style: 'margin-bottom:10px' });
-  main.append(bar, info, legend, t.node);
+  main.append(bar, info, extraBox, legend, t.node);
   async function summary() {
     try {
       const c = await api('GET', '/api/devices-summary');
@@ -1081,7 +1115,7 @@ PAGES.zarizeni = async (main, parts, params) => {
       flagCounts.online.textContent = c.online; flagCounts.offline.textContent = c.offline;
       flagCounts.never.textContent = c.never; flagCounts.stale.textContent = c.stale; flagCounts.no_section.textContent = c.no_section;
       flagCounts.ip_conflicts.textContent = c.ip_conflicts;
-      flagCounts.old.textContent = c.old; flagCounts.h_bad.textContent = c.h_bad; flagCounts.h_warn.textContent = c.h_warn; flagCounts.pinned.textContent = c.pinned; flagCounts.rdp.textContent = c.rdp;
+      flagCounts.old.textContent = c.old; flagCounts.h_issue.textContent = c.h_bad + c.h_warn; flagCounts.sec_bad.textContent = c.sec_bad; flagCounts.pinned.textContent = c.pinned; flagCounts.rdp.textContent = c.rdp;
       legend.replaceChildren(
         el('span', { class: 'dot on' }), T('odesílá data (do ' + c.stale_hours + ' h)') + '   ',
         el('span', { class: 'dot warn' }), T('agent neposlal data déle než ' + c.stale_hours + ' h') + '   ',
@@ -1367,23 +1401,8 @@ async function deviceDetail(main, id, viewId) {
     }],
     ['sec', 'Zabezpečení', (box) => {
       const s = x.security;
-      box.append(securityChecksCard(d, () => { S.nextTab = 'sec'; route(); }));
-      if (!s) { box.append(el('div', { class: 'note-box info' }, 'Údaje o zabezpečení zatím chybí – počkejte na další inventuru agenta (verze 1.1.0 a novější).')); return; }
-      const yn = (v) => (v == null || v === '' ? '' : el('span', { class: 'badge ' + (v === true || v === 'ano' || v === 'zapnuto' ? 'ok' : 'warn') }, v === true ? 'ano' : v === false ? 'ne' : v));
-      const bl = (s.bitlocker || []).map((v) => v.drive + ' ' + (v.protected ? 'chráněno' : 'nechráněno')).join(', ');
-      const av = (s.antivirus || []).map((a) => a.name + (a.enabled ? '' : ' (vypnuto)') + (a.up_to_date ? '' : ' (zastaralé definice)')).join(', ');
-      const df = s.defender ? 'Defender ' + (s.defender.enabled ? 'zapnut' : 'vypnut') + (s.defender.realtime ? ', ochrana v reálném čase' : '') +
-        (s.defender.signatures ? ', definice ' + s.defender.signatures : '') : '';
-      const fw = s.firewall || {};
-      box.append(el('div', { class: 'card' }, el('h3', null, 'Stav zabezpečení'), kv([
-        ['BitLocker', bl || 'nezjištěno'], ['Antivirus', av || (s.antivirus_text || '')], ['Windows Defender', df],
-        ['Firewall – doména', fw.domain == null ? '' : yn(fw.domain)], ['Firewall – soukromá síť', fw.private == null ? '' : yn(fw.private)],
-        ['Firewall – veřejná síť', fw.public == null ? '' : yn(fw.public)],
-        ['Secure Boot', yn(s.secure_boot_text)], ['TPM', s.tpm_text], ['Řízení uživatelských účtů (UAC)', s.uac == null ? '' : yn(s.uac)],
-        ['Vzdálená plocha (RDP)', s.rdp_enabled == null ? '' : (s.rdp_enabled ? 'zapnuta' + (s.rdp_nla ? ' (s ověřením NLA)' : ' (bez NLA)') : 'vypnuta')],
-        ['Poslední aktualizace Windows', s.last_hotfix], ['Poslední úspěšná instalace', s.last_update_success],
-        ['Počet nainstalovaných oprav', s.hotfix_count], ['Čeká na restart', s.pending_reboot_text],
-        ['Stav disků', s.disk_health_text], ['Předpověď selhání disku (S.M.A.R.T.)', s.disk_failure_predicted ? 'ano – hrozí selhání' : '']])));
+      if (!s) { box.append(el('div', { class: 'note-box info' }, 'Údaje o zabezpečení zatím chybí – počkejte na další inventuru agenta (verze 1.1.0 a novější).')); }
+      box.append(securityStateCard(d, s, () => { S.nextTab = 'sec'; route(); }));
     }],
     ['lic', 'Licence systému', (box) => {
       const l = x.licenses;
@@ -1618,13 +1637,14 @@ const secCountText = (err, warn) => {
 };
 const secSev = (lv) => (S.lang === 'en' ? (lv === 'err' ? 'Error' : 'Warning') : (lv === 'err' ? 'Chyba' : 'Varování'));
 
-// karta "Zabezpeceni" u PC: 8 zasadnich kontrol, doporuceni a vyjimky
-function securityChecksCard(d, reload) {
+// karta "Stav zabezpeceni" u PC: udaje zjistene agentem; u zasadnich radku je stav kontroly (OK / varovani / chyba) a vyjimka
+function securityStateCard(d, s, reload) {
   const ev = d.security_eval;
-  if (!ev) return null;
+  const x = d.details || {};
+  const rm = x.remote || {};
   const labels = { bitlocker: 'Šifrování disku (BitLocker)', antivirus: 'Antivirus', firewall: 'Firewall', updates: 'Aktualizace Windows',
     os: 'Podpora operačního systému', rdp: 'Vzdálená plocha (RDP)', disk: 'Disk (S.M.A.R.T.)', agent: 'Spojení s agentem' };
-  const cs = Object.entries(ev.checks);
+  const cs = ev ? Object.entries(ev.checks) : [];
   const err = cs.filter(([, c]) => c.st === 'err').length, warn = cs.filter(([, c]) => c.st === 'warn').length;
   const admin = isAdmin();
   const setExc = (key) => {
@@ -1636,17 +1656,52 @@ function securityChecksCard(d, reload) {
     } }]);
   };
   const delExc = async (key) => { await api('DELETE', '/api/security/exception?device_id=' + d.id + '&check=' + key); reload(); };
-  return el('div', { class: 'card' }, el('div', { class: 'row' }, el('h3', null, 'Zabezpečení: základní kontroly'),
+  const yn = (v) => (v == null || v === '' ? '' : el('span', { class: 'badge ' + (v === true || v === 'ano' || v === 'zapnuto' ? 'ok' : 'warn') }, v === true ? 'ano' : v === false ? 'ne' : v));
+  const sv = s || {};
+  const bl = (sv.bitlocker || []).map((v) => v.drive + ' ' + (v.protected ? 'chráněno' : 'nechráněno')).join(', ');
+  const av = (sv.antivirus || []).map((a) => a.name + (a.enabled ? '' : ' (vypnuto)') + (a.up_to_date ? '' : ' (zastaralé definice)')).join(', ');
+  const df = sv.defender ? 'Defender ' + (sv.defender.enabled ? 'zapnut' : 'vypnut') + (sv.defender.realtime ? ', ochrana v reálném čase' : '') +
+    (sv.defender.signatures ? ', definice ' + sv.defender.signatures : '') : '';
+  const fw = sv.firewall || {};
+  // RDP podle skutecneho stavu (agent 2.4.1+); u starsiho agenta jen neovereno
+  let rdpText = '';
+  if (rm.rdp_listening != null && rm.rdp_port != null) {
+    const nla = sv.rdp_nla != null ? sv.rdp_nla : rm.rdp_nla;
+    rdpText = !rm.rdp_listening ? 'vypnuta (na portu ' + rm.rdp_port + ' se neposlouchá)'
+      : 'zapnuta' + (rm.rdp_fw === false ? ', ale firewall ji blokuje' : (nla ? ' (s ověřením NLA)' : ' (bez NLA)')) + ', port ' + rm.rdp_port;
+  } else rdpText = 'neověřeno (skutečný stav zjistí agent 2.4.1 nebo novější)';
+  const rows = [
+    ['BitLocker', bl || (s ? 'nezjištěno' : ''), 'bitlocker'], ['Antivirus', av || sv.antivirus_text || '', 'antivirus'], ['Windows Defender', df],
+    ['Firewall – doména', fw.domain == null ? '' : yn(fw.domain), 'firewall'], ['Firewall – soukromá síť', fw.private == null ? '' : yn(fw.private)],
+    ['Firewall – veřejná síť', fw.public == null ? '' : yn(fw.public)],
+    ['Secure Boot', yn(sv.secure_boot_text)], ['TPM', sv.tpm_text], ['Řízení uživatelských účtů (UAC)', sv.uac == null ? '' : yn(sv.uac)],
+    ['Vzdálená plocha (RDP)', rdpText, 'rdp'],
+    ['Podpora operačního systému', (x.os && x.os.name) || d.os_name || '', 'os'],
+    ['Poslední aktualizace Windows', sv.last_hotfix, 'updates'], ['Poslední úspěšná instalace', sv.last_update_success],
+    ['Počet nainstalovaných oprav', sv.hotfix_count], ['Čeká na restart', sv.pending_reboot_text],
+    ['Stav disků', sv.disk_health_text, 'disk'], ['Předpověď selhání disku (S.M.A.R.T.)', sv.disk_failure_predicted ? 'ano – hrozí selhání' : ''],
+    ['Spojení s agentem', ev && ev.checks.agent ? ev.checks.agent.text : '', 'agent']];
+  const stat = (key) => {
+    const c = ev && ev.checks[key];
+    if (!c || c.st === 'none') return null;
+    const word = c.st === 'err' ? (S.lang === 'en' ? 'error' : 'chyba') : c.st === 'warn' ? (S.lang === 'en' ? 'warning' : 'varování') : c.st === 'exc' ? (S.lang === 'en' ? 'OK-E' : 'OK-V') : 'OK';
+    return el('span', { class: 'badge ' + (c.st === 'err' ? 'bad' : c.st === 'warn' ? 'warn' : 'ok'), title: secTitle(labels[key], key, c) }, word);
+  };
+  return el('div', { class: 'card' }, el('div', { class: 'row' }, el('h3', null, 'Stav zabezpečení'),
     el('span', { class: 'right' }, err ? el('span', { class: 'badge bad' }, secCountText(err, 0)) : null,
       warn ? el('span', { class: 'badge warn' }, secCountText(0, warn)) : null,
-      !err && !warn ? el('span', { class: 'badge ok' }, 'v pořádku') : null)),
-  el('div', { class: 'sec-checks' }, cs.map(([key, c]) => el('div', { class: 'sec-line' },
-    el('span', { class: 'sec-name' }, labels[key] || key),
-    el('span', { class: 'sec-val' }, secCell(key, labels[key] || key, c)),
-    el('span', { class: 'sec-hint small muted' }, c.st === 'exc' ? [T('Výjimka') + ': ' + (c.note || '–')] : (c.hint ? [c.hint] : '')),
-    admin ? el('span', { class: 'sec-act' }, c.st === 'exc'
-      ? el('button', { class: 'ghost', onclick: () => delExc(key) }, 'Zrušit výjimku')
-      : (c.st === 'err' || c.st === 'warn' ? el('button', { class: 'ghost', onclick: () => setExc(key) }, 'Výjimka') : null)) : null))));
+      ev && !err && !warn ? el('span', { class: 'badge ok' }, 'v pořádku') : null)),
+  el('div', { class: 'sec-checks' }, rows.filter((r) => r[1] != null && r[1] !== '').map(([label, val, key]) => {
+    const c = key && ev ? ev.checks[key] : null;
+    return el('div', { class: 'sec-line st' },
+      el('span', { class: 'sec-name muted' }, label),
+      el('span', { class: 'sec-val2' }, val, c && c.hint && c.st !== 'exc' ? el('div', { class: 'small muted' }, c.hint) : null,
+        c && c.st === 'exc' ? el('div', { class: 'small muted' }, T('Výjimka') + ': ' + (c.note || '–')) : null),
+      el('span', { class: 'sec-stat' }, key ? stat(key) : null),
+      admin && c ? el('span', { class: 'sec-act' }, c.st === 'exc'
+        ? el('button', { class: 'ghost', onclick: () => delExc(key) }, 'Zrušit výjimku')
+        : (c.st === 'err' || c.st === 'warn' ? el('button', { class: 'ghost', onclick: () => setExc(key) }, 'Výjimka') : null)) : el('span'));
+  })));
 }
 
 PAGES.security = async (main, parts, params) => {

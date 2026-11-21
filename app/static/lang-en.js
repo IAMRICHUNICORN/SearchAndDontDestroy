@@ -1,6 +1,22 @@
 /* HWSW Monitor - anglicky preklad rozhrani (cesky text -> anglicky). Generovano; data, cisla a datum zustavaji ceske. */
 window.HWSW_EN = {
   dict: {
+"Další filtry ▾": "More filters ▾",
+"Další filtry ▴": "More filters ▴",
+"Chyba agenta (nejzávažnější problém)": "Agent error (most serious problem)",
+"Security: stav": "Security: status",
+"Security: nejzávažnější problém": "Security: most serious problem",
+"RDP zapnuto (vzdálená plocha, skutečný stav)": "RDP enabled (remote desktop, actual state)",
+"neověřeno": "unverified",
+"neověřeno (skutečný stav zjistí agent 2.4.1 nebo novější)": "unverified (the actual state is reported by agent 2.4.1 or newer)",
+"Skutečný stav zatím nikdo nezjistil: počkejte na agenta 2.4.1 nebo novější": "The actual state has not been detected yet: wait for agent 2.4.1 or newer",
+"Skutečný stav vzdálené plochy zatím nikdo nezjistil: počkejte na agenta 2.4.1 nebo novější": "The actual state of remote desktop has not been detected yet: wait for agent 2.4.1 or newer",
+"Podrobnosti po rozkliknutí řádku (karta Zabezpečení)": "Details after opening the row (Security tab)",
+"blokuje firewall": "blocked by firewall",
+"V nastavení je vzdálená plocha povolená, ale nikdo na portu neposlouchá (služba neběží nebo se ještě nespustila)": "Remote desktop is allowed in the settings, but nothing is listening on the port (the service is not running or has not started yet)",
+"Vzdálená plocha běží, ale firewall nemá povolené příchozí pravidlo, zvenku se nepřipojíte": "Remote desktop is running, but the firewall has no inbound allow rule, so it cannot be reached from outside",
+"Vzdálená plocha běží bez ověření NLA": "Remote desktop is running without NLA authentication",
+"Vzdálená plocha běží (ověření NLA je zapnuté)": "Remote desktop is running (NLA authentication is on)",
 "Security": "Security",
 "Zásadní bezpečnostní kontroly počítačů a serverů": "Essential security checks of computers and servers",
 "Matice": "Matrix",
