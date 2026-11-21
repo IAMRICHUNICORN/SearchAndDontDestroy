@@ -128,12 +128,12 @@ _SILENT_ON = "(d.online = 1 AND %(lc)s <> '' AND %(lc)s < datetime('now', '-30 m
 _HEALTH_BAD = (
     "CASE WHEN %(err)s AND %(days)s >= __ERRD__ THEN 'chyba agenta (' || d.agent_error || '), opakuje se ' || %(days)s || ' dny; ' ELSE '' END || "
     "CASE WHEN %(son)s AND %(lc)s < datetime('now', '-__ERRD__ days') "
-    "THEN 'PC je online, ale agent se nespojil déle než __ERRD__ dny (od ' || %(lc)s || ' UTC); ' ELSE '' END"
+    "THEN 'PC je online, ale agent se nespojil déle než __ERRD__ dny (od [[' || %(lc)s || ']]); ' ELSE '' END"
     % {"err": _ERR_CUR, "days": _ERR_DAYS, "son": _SILENT_ON, "lc": _LC})
 _HEALTH_WARN = (
     "CASE WHEN %(err)s AND %(days)s < __ERRD__ THEN 'chyba agenta (' || d.agent_error || '); ' ELSE '' END || "
     "CASE WHEN %(son)s AND %(lc)s >= datetime('now', '-__ERRD__ days') "
-    "THEN 'PC je online, ale agent se nespojil od ' || %(lc)s || ' (UTC); ' ELSE '' END || "
+    "THEN 'PC je online, ale agent se nespojil od [[' || %(lc)s || ']]; ' ELSE '' END || "
     "CASE WHEN %(comp)s = 1 AND COALESCE(d.last_inventory, '') = '' AND (COALESCE(d.agent_version, '') <> '' OR COALESCE(d.agent_beat, '') <> '') "
     "THEN 'agent zatím neposlal inventuru; ' ELSE '' END || "
     "CASE WHEN COALESCE(d.last_inventory, '') <> '' AND d.last_inventory < datetime('now', '-__STALE__ hours') "
@@ -174,7 +174,7 @@ _COMM_REASON = (
     "|| 'skutečném startu Windows – restartujte PC, nebo nasaďte naplánovanou úlohu)' "
     "ELSE 'PC je vypnuté nebo mimo síť; agent se ozve po zapnutí, pokud je nainstalovaný' END "
     "WHEN %(lc)s >= datetime('now', '-12 minutes') THEN '' "
-    "WHEN d.online = 1 THEN 'PC je zapnuté, ale agent mlčí od ' || %(lc)s || ' (UTC): agent neběží, nemá spojení se serverem nebo ho blokuje firewall' "
+    "WHEN d.online = 1 THEN 'PC je zapnuté, ale agent mlčí od [[' || %(lc)s || ']]: agent neběží, nemá spojení se serverem nebo ho blokuje firewall' "
     "ELSE 'PC je vypnuté, uspané nebo mimo síť; agent se ozve po zapnutí' END"
     % {"lc": _LAST_CONTACT, "comp": _IS_COMPUTER})
 _NEXT_BEAT = "CASE WHEN COALESCE(d.agent_beat, '') <> '' THEN datetime(d.agent_beat, '+5 minutes') ELSE '' END"
@@ -865,7 +865,7 @@ def run_query(conn, entity, columns=None, filters=None, search="", sort="", sort
     return meta, rows, total
 
 
-def to_csv(meta, rows):
+def to_csv(meta, rows, tz=None):
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=";", lineterminator="\r\n")
     writer.writerow([m["label"] for m in meta])
@@ -876,6 +876,8 @@ def to_csv(meta, rows):
             if m["type"] == "bool":
                 v = "ano" if v else "ne"
             v = "" if v is None else v
+            if tz is not None and isinstance(v, str):
+                v = db.to_local(v, tz)
             # ochrana proti vzorcum v Excelu (CSV injection)
             if isinstance(v, str) and v[:1] in ("=", "+", "-", "@"):
                 v = "'" + v

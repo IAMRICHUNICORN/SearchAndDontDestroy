@@ -2,6 +2,15 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.11.2
+- **Stáří všude ve dnech** (česky „70 dní“, anglicky „70 days“) místo roky/měsíce/dny. Hodiny a minuty zůstávají.
+- **Časy podle místního času:** nové Nastavení → „Časové pásmo“ (výchozí Europe/Prague, včetně letního a zimního času). Použije se v celé aplikaci, v textech (např. „agent se nespojil od …“) i v exportu CSV. Nahrazuje zobrazení v UTC.
+- **Security předěláno podle karty PC:** pořadí kontrol (šifrování disku, antivirus, firewall, Secure Boot, TPM, UAC, RDP, podpora OS, aktualizace, čeká na restart, disk, agent) je stejné v přehledu, v matici i na kartě PC. Nové kontroly: Secure Boot vypnutý = varování, UAC vypnuté = chyba, TPM chybí a „Čeká na restart“ jen informace. Kliknutí na zařízení otevře kartu PC na záložce Zabezpečení.
+- **Seznam Zařízení:** výchozí pohled podle zadání (Název, Model, Uživatel, OS, IP, Stav agenta, Zdraví, Chyba agenta, Security stav a problém, Online, Skupiny, Datum instalace OS). Kliknutí na Security stav / problém otevře kartu Zabezpečení, kliknutí na Stav agenta a Chybu agenta otevře záložku Agent.
+- **Čeština a angličtina se nemíchají:** přeložené texty ze serveru, popisy verzí agenta a nápovědy.
+- Oprava: překryv poznámky o připnutí verze s tlačítkem Uložit na záložce Agent.
+- Přidán balíček `tzdata` (databáze časových pásem, kvůli přepočtu letního času).
+
 ## 1.11.1
 - **Agent 2.4.1** (rozešle se sám do 5 minut od aktualizace serveru; do té doby u starších agentů zůstane RDP „neověřeno“).
   Vzdálená plocha (RDP) se hlásí podle **skutečného stavu**: běží služba a posloucháme na portu RDP, je povolené pravidlo ve firewallu a jak je skutečně vynucené ověření NLA. Dřív se četlo jen nastavení v registru, a to se mohlo lišit od reality (GPO).

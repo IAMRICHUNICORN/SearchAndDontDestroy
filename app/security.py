@@ -9,18 +9,23 @@ import re
 
 from . import db, entities
 
+# poradi odpovida karte PC (Stav zabezpeceni)
 CHECKS = [
     ("bitlocker", "Šifrování disku"),
     ("antivirus", "Antivirus"),
     ("firewall", "Firewall"),
-    ("updates", "Aktualizace"),
-    ("os", "Podpora OS"),
+    ("secureboot", "Secure Boot"),
+    ("tpm", "TPM"),
+    ("uac", "UAC"),
     ("rdp", "Vzdálená plocha"),
+    ("os", "Podpora OS"),
+    ("updates", "Aktualizace"),
+    ("restart", "Čeká na restart"),
     ("disk", "Disk (S.M.A.R.T.)"),
     ("agent", "Agent"),
 ]
 CHECK_KEYS = [k for k, _ in CHECKS]
-RANK = {"err": 3, "warn": 2, "ok": 1, "exc": 1, "none": 0}
+RANK = {"err": 3, "warn": 2, "ok": 1, "exc": 1, "info": 0, "none": 0}
 
 # konec podpory (podretezec nazvu OS, malymi pismeny -> datum); LTSC/IoT se nehodnoti
 OS_EOL = [
@@ -170,6 +175,42 @@ def check_rdp(sec, remote):
     return _c("warn", "zapnuta", "Vzdálená plocha běží (ověření NLA je zapnuté)")
 
 
+def check_secureboot(sec):
+    v = str(sec.get("secure_boot_text") or "").lower()
+    if v == "ano":
+        return _c("ok", "ano")
+    if v == "ne":
+        return _c("warn", "ne", "Secure Boot je vypnutý nebo ho počítač nepodporuje (Legacy BIOS)")
+    return _c("none", "?")
+
+
+def check_tpm(sec):
+    v = str(sec.get("tpm_text") or "").lower()
+    if v.startswith("ano"):
+        return _c("ok", str(sec.get("tpm_text")))
+    if v in ("ne", "vypnuto"):
+        return _c("info", "chybí" if v == "ne" else "vypnut", "TPM není k dispozici nebo je vypnutý (jen informace)")
+    return _c("none", "?")
+
+
+def check_uac(sec):
+    v = sec.get("uac")
+    if v is None or v == "":
+        return _c("none", "?")
+    if _bool(v):
+        return _c("ok", "ano")
+    return _c("err", "vypnuto", "Řízení uživatelských účtů (UAC) je vypnuté")
+
+
+def check_restart(sec):
+    v = str(sec.get("pending_reboot_text") or "").lower()
+    if v == "ano":
+        return _c("info", "ano", "Počítač čeká na restart (jen informace)")
+    if v == "ne":
+        return _c("ok", "ne")
+    return _c("none", "?")
+
+
 def check_disk(sec):
     v = sec.get("disk_failure_predicted")
     if v is None or v == "":
@@ -202,8 +243,12 @@ def evaluate(dev, details, health, reason, cfg, today=None):
         "bitlocker": check_bitlocker(sec, dev),
         "antivirus": check_antivirus(sec),
         "firewall": check_firewall(sec),
+        "secureboot": check_secureboot(sec),
+        "tpm": check_tpm(sec),
+        "uac": check_uac(sec),
         "updates": check_updates(sec, th, today),
         "os": check_os(dev, th, today),
+        "restart": check_restart(sec),
         "rdp": check_rdp(sec, remote),
         "disk": check_disk(sec),
         "agent": check_agent(health, reason),
@@ -273,7 +318,7 @@ def overview(conn):
     exc = exceptions_for(conn)
     today = datetime.date.today()
     out = []
-    summary = {k: {"err": 0, "warn": 0, "exc": 0, "none": 0, "ok": 0} for k in CHECK_KEYS}
+    summary = {k: {"err": 0, "warn": 0, "exc": 0, "none": 0, "ok": 0, "info": 0} for k in CHECK_KEYS}
     for r in rows:
         if r.get("section") not in ("Počítače", "Servery"):
             continue
@@ -299,7 +344,7 @@ def overview(conn):
 
 
 # poradi, ve kterem se vybira nejzavaznejsi problem pro sloupec Security (agent se hodnoti zvlast: sloupec Chyba agenta)
-PROBLEM_ORDER = ["os", "bitlocker", "antivirus", "firewall", "updates", "rdp", "disk"]
+PROBLEM_ORDER = ["os", "bitlocker", "antivirus", "firewall", "uac", "secureboot", "updates", "rdp", "disk"]
 LEVEL_CS = {"err": "chyba", "warn": "varování", "ok": "v pořádku", "none": ""}
 
 

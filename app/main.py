@@ -183,7 +183,9 @@ def logout(request: Request):
 
 @app.get("/api/me")
 def me(user=Depends(current_user)):
-    return dict(user, version=db.APP_VERSION)
+    with db.db() as conn:
+        tz = db.get_settings(conn).get("timezone") or "Europe/Prague"
+    return dict(user, version=db.APP_VERSION, tz=tz)
 
 
 @app.put("/api/me/lang")
@@ -295,7 +297,7 @@ def query(body: dict = Body(...), user=Depends(admin_user)):
             meta, rows, _t = entities.run_query(conn, entity, body.get("columns"), body.get("filters"),
                                                 body.get("search"), body.get("sort"), body.get("sort_dir"),
                                                 limit=0, show_secrets=True)
-            return Response(entities.to_csv(meta, rows), media_type="text/csv; charset=utf-8",
+            return Response(entities.to_csv(meta, rows, db.tzinfo(db.get_settings(conn).get("timezone"))), media_type="text/csv; charset=utf-8",
                             headers={"Content-Disposition": 'attachment; filename="hwsw-%s.csv"' % entity})
         meta, rows, total = entities.run_query(conn, entity, body.get("columns"), body.get("filters"),
                                                body.get("search"), body.get("sort"), body.get("sort_dir"),
@@ -407,7 +409,7 @@ def view_data(view_id: int, body: dict = Body(default={}), user=Depends(active_u
         if body.get("export"):
             meta, rows, _t = entities.run_query(conn, view["entity"], cols, flt, body.get("search"), sort,
                                                 sort_dir, limit=0, show_secrets=admin)
-            return Response(entities.to_csv(meta, rows), media_type="text/csv; charset=utf-8",
+            return Response(entities.to_csv(meta, rows, db.tzinfo(db.get_settings(conn).get("timezone"))), media_type="text/csv; charset=utf-8",
                             headers={"Content-Disposition": 'attachment; filename="hwsw-pohled-%d.csv"' % view_id})
         meta, rows, total = entities.run_query(conn, view["entity"], cols, flt, body.get("search"), sort,
                                                sort_dir, limit=size, offset=offset)
@@ -944,6 +946,12 @@ def settings_put(body: dict = Body(...), user=Depends(admin_user)):
             if key in numeric:
                 low, high = numeric[key]
                 value = str(min(high, max(low, ingest.num(value, low))))
+            if key == "timezone":
+                try:
+                    from zoneinfo import ZoneInfo
+                    ZoneInfo(value)
+                except Exception:
+                    raise HTTPException(400, "Neznámé časové pásmo (např. Europe/Prague)")
             if key == "scan_ranges":
                 try:
                     discovery.parse_ranges(value)

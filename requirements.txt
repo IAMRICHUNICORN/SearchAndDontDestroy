@@ -4,3 +4,4 @@ ldap3==2.9.1
 pywinrm>=0.4.3,<0.6
 cryptography>=42
 pycryptodome>=3.20
+tzdata

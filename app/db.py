@@ -659,6 +659,7 @@ def _crypto():
 
 
 DEFAULT_SETTINGS = {
+    "timezone": "Europe/Prague",
     "server_url": "",
     "cert_thumb_known": "",
     "ad_enabled": "0",
@@ -719,3 +720,37 @@ def set_setting(conn, key, value):
         value = _crypto().encrypt(value.encode()).decode()
     conn.execute("INSERT INTO settings(key,value) VALUES(?,?) "
                  "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+
+def tzinfo(name):
+    """Casove pasmo pro zobrazeni (cas v databazi je UTC). Pri neznamem nazvu se pouzije Praha, a kdyz chybi databaze pasem, UTC."""
+    import datetime as _dt
+    try:
+        from zoneinfo import ZoneInfo
+        for n in (name, "Europe/Prague"):
+            try:
+                return ZoneInfo(n)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return _dt.timezone.utc
+
+
+def to_local(text, tz):
+    """Prevede UTC casy ve tvaru RRRR-MM-DD HH:MM:SS (i v textech jako [[cas]]) do mistniho casu vcetne letniho/zimniho."""
+    import datetime as _dt
+    if not isinstance(text, str):
+        return text
+
+    def one(m):
+        try:
+            d = _dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=_dt.timezone.utc)
+            return d.astimezone(tz).strftime("%d. %m. %Y %H:%M")
+        except ValueError:
+            return m.group(1)
+    if "[[" in text:
+        return re.sub(r"\[\[(.+?)\]\]", one, text)
+    if re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$", text):
+        return re.sub(r"^(.+)$", one, text)
+    return text

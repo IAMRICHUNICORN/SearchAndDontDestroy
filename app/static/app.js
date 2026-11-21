@@ -9,6 +9,7 @@ try { if (localStorage.getItem('hwsw_lang') === 'en') S.lang = 'en'; } catch (e)
 // Cesky text je zaklad; anglicky preklad (lang-en.js) se dosazuje pri vykreslovani. Data, cisla, datum a jednotky zustavaji ceske.
 const I18N = { cache: new Map(), frags: null, pats: null };
 function T(s) {
+  if (typeof s === 'string' && s.indexOf('[[') >= 0) s = s.replace(/\[\[(.+?)\]\]/g, (m, ts) => fmtDate(ts));
   if (S.lang !== 'en' || typeof s !== 'string' || s.length < 2 || !window.HWSW_EN) return s;
   const hit = I18N.cache.get(s);
   if (hit !== undefined) return hit;
@@ -113,7 +114,8 @@ const fail = (e) => toast(e.message || String(e), 'error');
 function fmtDate(s) {
   if (typeof s !== 'string' || !/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(s)) return s == null ? '' : s;
   const d = new Date(s.replace(' ', 'T') + 'Z');
-  return d.toLocaleString('cs-CZ', { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const opt = { day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' };
+  try { return d.toLocaleString('cs-CZ', Object.assign({ timeZone: (S.me && S.me.tz) || 'Europe/Prague' }, opt)); } catch (e) { return d.toLocaleString('cs-CZ', opt); }
 }
 function fmtSize(b) {
   if (b > 1048576) return (b / 1048576).toFixed(1).replace('.', ',') + ' MB';
@@ -216,44 +218,13 @@ function daysSince(dateStr) {
   const t = Date.parse(String(dateStr).slice(0, 10));
   return isFinite(t) ? Math.round((Date.now() - t) / 86400000) : null;
 }
-function ageParts(days) {
-  days = Math.floor(Number(days));
-  if (!isFinite(days) || days < 0) return null;
-  const now = new Date();
-  const t = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const s0 = new Date(t.getFullYear(), t.getMonth(), t.getDate() - days);
-  const addM = (n) => {
-    const r = new Date(s0.getFullYear(), s0.getMonth() + n, 1);
-    const last = new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate();
-    r.setDate(Math.min(s0.getDate(), last));
-    return r;
-  };
-  let tm = (t.getFullYear() - s0.getFullYear()) * 12 + (t.getMonth() - s0.getMonth());
-  if (addM(tm) > t) tm--;
-  const d = Math.round((t - addM(tm)) / 86400000);
-  return { y: Math.floor(tm / 12), m: tm % 12, d };
-}
 function fmtAge(days) {
-  const p = ageParts(days);
-  if (!p) return '';
-  const u = S.lang === 'en' ? ['Y', 'M', 'D'] : ['L', 'M', 'D'];
-  const out = [];
-  if (p.y) out.push(p.y + u[0]);
-  if (p.m) out.push(p.m + u[1]);
-  if (p.d || !out.length) out.push(p.d + u[2]);
-  return out.join(' ');
+  days = Math.floor(Number(days));
+  if (!isFinite(days) || days < 0) return '';
+  if (S.lang === 'en') return days + (days === 1 ? ' day' : ' days');
+  return days + ' ' + (days === 1 ? 'den' : (days >= 2 && days <= 4 ? 'dny' : 'dní'));
 }
-function fmtAgeFull(days) {
-  const p = ageParts(days);
-  if (!p) return '';
-  const en = S.lang === 'en';
-  const pl = (n, a, b, c) => n + ' ' + (en ? (n === 1 ? a : c) : (n === 1 ? a : (n >= 2 && n <= 4 ? b : c)));
-  const out = [];
-  if (p.y) out.push(en ? pl(p.y, 'year', '', 'years') : pl(p.y, 'rok', 'roky', 'let'));
-  if (p.m) out.push(en ? pl(p.m, 'month', '', 'months') : pl(p.m, 'měsíc', 'měsíce', 'měsíců'));
-  if (p.d || !out.length) out.push(en ? pl(p.d, 'day', '', 'days') : pl(p.d, 'den', 'dny', 'dní'));
-  return out.length === 2 ? out.join(en ? ' and ' : ' a ') : out.join(' ');
-}
+const fmtAgeFull = fmtAge;
 // sloupce, jejichz hodnota je pocet dni (zobrazi se jako stari; razeni a filtry zustavaji podle dni)
 const AGE_KEYS = new Set(['os_age_days', 'hotfix_age']);
 function ageNode(days) {
@@ -316,14 +287,22 @@ function agentIssueDialog(row, health) {
   modal('Stav agenta', body, buttons);
 }
 
+// bunka seznamu, ktera po kliknuti otevre detail PC rovnou na dane zalozce (zabezpeceni / agent)
+function jumpCell(td, row, tab) {
+  td.classList.add('clickable');
+  td.addEventListener('click', (e) => { e.stopPropagation(); S.nextTab = tab; location.hash = '#/zarizeni/' + row._id; });
+  return td;
+}
+
 function cell(col, row) {
   const v = row[col.key];
   if (col.key === 'agent_state') {
     const td = el('td', { class: 'nw' });
     if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
+    if (row._agent || v !== 'nikdy') jumpCell(td, row, 'agent');
     const last = (row._beat && row._beat > (row._inv || '')) ? row._beat : row._inv;
-    td.title = T((v === 'nikdy' ? 'Agent zatím neposlal žádná data' : 'Poslední kontakt: ' + fmtDate(last) + ' · poslední inventura: ' + fmtDate(row._inv)) +
-      (row._agent ? ' · agent ' + row._agent : '') + (row._commr ? ' · ' + row._commr : ''));
+    td.title = [v === 'nikdy' ? T('Agent zatím neposlal žádná data') : T('Poslední kontakt:') + ' ' + fmtDate(last) + ' · ' + T('poslední inventura:') + ' ' + fmtDate(row._inv),
+      row._agent ? 'agent ' + row._agent : '', row._commr ? T(row._commr) : ''].filter(Boolean).join(' · ');
     const st = row._vstat || '';
     const verBad = st && st !== 'aktuální' && st !== 'novější';
     return add(td, [el('span', { class: 'dot ' + AGENT_DOT[v] }), v === 'nikdy' ? 'nikdy' : ago(last),
@@ -351,19 +330,29 @@ function cell(col, row) {
     const td = el('td', { class: 'nw' });
     if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
     const parts = String(v).split('; ').filter(Boolean);
-    td.title = T(String(v));
+    td.title = T(String(v)) + ' · ' + T('klikněte pro detail agenta');
+    jumpCell(td, row, 'agent');
     return add(td, [parts[0], parts.length > 1 ? el('span', { class: 'small muted' }, ' +' + (parts.length - 1)) : null]);
   }
   if (col.key === 'sec_level') {
     const td = el('td', { class: 'nw' });
     if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
+    td.title = T('Klikněte pro kartu Zabezpečení');
+    jumpCell(td, row, 'sec');
     return add(td, [el('span', { class: 'dot ' + (v === 'chyba' ? 'bad' : (v === 'varování' ? 'warn' : 'on')) }), v]);
   }
   if (col.key === 'sec_problem') {
     const td = el('td', { class: 'nw' });
     if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
-    td.title = T('Podrobnosti po rozkliknutí řádku (karta Zabezpečení)');
-    return add(td, [v]);
+    td.title = T('Klikněte pro kartu Zabezpečení');
+    jumpCell(td, row, 'sec');
+    const m = /^(.*?)(?:: (.*?))?(?: \+(\d+))?$/.exec(String(v)) || [];
+    return add(td, [T(m[1] || '') + (m[2] ? ': ' + T(m[2]) : '') + (m[3] ? ' +' + m[3] : '')]);
+  }
+  if (col.key === 'os_install_date') {
+    const td = el('td', { class: 'nw' });
+    if (!v) return add(td, [el('span', { class: 'muted' }, '–')]);
+    return add(td, [fmtDate(v), ' ', el('span', { class: 'small muted' }, ageNode(daysSince(v)))]);
   }
   if (col.key === 'os_name' && v) {
     const td = el('td', { class: 'nw', title: v });
@@ -1016,7 +1005,7 @@ PAGES.zarizeni = async (main, parts, params) => {
   if (!isAdmin()) return PAGES.prehled(main);
   pageHead(main, 'Zařízení', 'Vše, co bylo nalezeno v doméně, v IP rozsahu nebo nahlášeno agentem',
     el('button', { onclick: () => groupManager(() => { loadGroupSel(); t.refreshGroups(); }) }, 'Skupiny'));
-  const PC_COLS = ['hostname', 'ip', 'logged_user', 'agent_state', 'agent_health', 'agent_issue', 'sec_level', 'sec_problem', 'os_name', 'model', 'online', 'groups'];
+  const PC_COLS = ['hostname', 'model', 'logged_user', 'os_name', 'ip', 'agent_state', 'agent_health', 'agent_issue', 'sec_level', 'sec_problem', 'online', 'groups', 'os_install_date'];
   const NET_COLS = ['hostname', 'device_type', 'groups', 'online', 'ip', 'mac', 'manufacturer', 'model'];
   const ALL_COLS = ['hostname', 'section', 'agent_state', 'agent_version', 'device_type', 'logged_user', 'groups', 'online', 'ip', 'os_name', 'model'];
   const SECTIONS = ['Počítače', 'Servery', 'IoT', 'Síťové prvky', 'Tiskárny'];
@@ -1306,9 +1295,9 @@ async function agentTab(box, d, id) {
           toast('Uloženo – agent se přepne nejpozději za 5 minut', 'ok'); route();
         } catch (e) { fail(e); }
       } }, 'Uložit')),
-      el('div', { class: 'hint' }, 'Připnutí platí jen pro agenty od verze 2.0.0. Starší agent následuje globální cíl.')),
+      el('div', { class: 'hint', style: 'margin-top:10px' }, 'Připnutí platí jen pro agenty od verze 2.0.0. Starší agent následuje globální cíl.')),
     el('div', { class: 'card' }, el('h3', null, 'Poslední chyba a provoz'), kvl([
-      ['Poslední chyba', d.agent_error], ['Čas chyby (UTC)', d.agent_error_at],
+      ['Poslední chyba', d.agent_error], ['Čas chyby', fmtDate(d.agent_error_at)],
       ['Stav chyby', d.agent_error ? ((Date.now() - Date.parse(String(d.agent_error_at).replace(' ', 'T') + 'Z')) / 60000 > 30
         ? 'opraveno (agent se už o chybě nehlásí; zůstává jen v historii)' : 'trvá (agent se o ní stále hlásí)') : ''], ['Běží s právy správce', yn(info.elevated)],
       ['Sledování USB', yn(info.usb_watch)], ['Sledování souborů na USB', yn(info.usb_files)],
@@ -1609,8 +1598,8 @@ async function viewEditor(view) {
 }
 
 // --------------------------------------------------------------- Security
-const SEC_SHORT = { bitlocker: 'Šifr.', antivirus: 'AV', firewall: 'FW', updates: 'Akt.', os: 'OS', rdp: 'RDP', disk: 'Disk', agent: 'Agent' };
-const SEC_RANK = { err: 3, warn: 2, exc: 1, ok: 1, none: 0 };
+const SEC_SHORT = { bitlocker: 'Šifr.', antivirus: 'AV', firewall: 'FW', secureboot: 'SB', tpm: 'TPM', uac: 'UAC', rdp: 'RDP', os: 'OS', updates: 'Akt.', restart: 'Rest.', disk: 'Disk', agent: 'Agent' };
+const SEC_RANK = { err: 3, warn: 2, exc: 1, ok: 1, info: 0, none: 0 };
 function secText(key, c) {
   if (c.st === 'exc') return S.lang === 'en' ? 'OK-E' : 'OK-V';
   if (key === 'updates' && c.days != null) return fmtAge(c.days);
@@ -1643,7 +1632,8 @@ function securityStateCard(d, s, reload) {
   const x = d.details || {};
   const rm = x.remote || {};
   const labels = { bitlocker: 'Šifrování disku (BitLocker)', antivirus: 'Antivirus', firewall: 'Firewall', updates: 'Aktualizace Windows',
-    os: 'Podpora operačního systému', rdp: 'Vzdálená plocha (RDP)', disk: 'Disk (S.M.A.R.T.)', agent: 'Spojení s agentem' };
+    os: 'Podpora operačního systému', rdp: 'Vzdálená plocha (RDP)', disk: 'Disk (S.M.A.R.T.)', agent: 'Spojení s agentem',
+    secureboot: 'Secure Boot', tpm: 'TPM', uac: 'Řízení uživatelských účtů (UAC)', restart: 'Čeká na restart' };
   const cs = ev ? Object.entries(ev.checks) : [];
   const err = cs.filter(([, c]) => c.st === 'err').length, warn = cs.filter(([, c]) => c.st === 'warn').length;
   const admin = isAdmin();
@@ -1674,18 +1664,18 @@ function securityStateCard(d, s, reload) {
     ['BitLocker', bl || (s ? 'nezjištěno' : ''), 'bitlocker'], ['Antivirus', av || sv.antivirus_text || '', 'antivirus'], ['Windows Defender', df],
     ['Firewall – doména', fw.domain == null ? '' : yn(fw.domain), 'firewall'], ['Firewall – soukromá síť', fw.private == null ? '' : yn(fw.private)],
     ['Firewall – veřejná síť', fw.public == null ? '' : yn(fw.public)],
-    ['Secure Boot', yn(sv.secure_boot_text)], ['TPM', sv.tpm_text], ['Řízení uživatelských účtů (UAC)', sv.uac == null ? '' : yn(sv.uac)],
+    ['Secure Boot', yn(sv.secure_boot_text), 'secureboot'], ['TPM', sv.tpm_text, 'tpm'], ['Řízení uživatelských účtů (UAC)', sv.uac == null ? '' : yn(sv.uac), 'uac'],
     ['Vzdálená plocha (RDP)', rdpText, 'rdp'],
     ['Podpora operačního systému', (x.os && x.os.name) || d.os_name || '', 'os'],
     ['Poslední aktualizace Windows', sv.last_hotfix, 'updates'], ['Poslední úspěšná instalace', sv.last_update_success],
-    ['Počet nainstalovaných oprav', sv.hotfix_count], ['Čeká na restart', sv.pending_reboot_text],
+    ['Počet nainstalovaných oprav', sv.hotfix_count], ['Čeká na restart', sv.pending_reboot_text, 'restart'],
     ['Stav disků', sv.disk_health_text, 'disk'], ['Předpověď selhání disku (S.M.A.R.T.)', sv.disk_failure_predicted ? 'ano – hrozí selhání' : ''],
     ['Spojení s agentem', ev && ev.checks.agent ? ev.checks.agent.text : '', 'agent']];
   const stat = (key) => {
     const c = ev && ev.checks[key];
     if (!c || c.st === 'none') return null;
-    const word = c.st === 'err' ? (S.lang === 'en' ? 'error' : 'chyba') : c.st === 'warn' ? (S.lang === 'en' ? 'warning' : 'varování') : c.st === 'exc' ? (S.lang === 'en' ? 'OK-E' : 'OK-V') : 'OK';
-    return el('span', { class: 'badge ' + (c.st === 'err' ? 'bad' : c.st === 'warn' ? 'warn' : 'ok'), title: secTitle(labels[key], key, c) }, word);
+    const word = c.st === 'err' ? (S.lang === 'en' ? 'error' : 'chyba') : c.st === 'warn' ? (S.lang === 'en' ? 'warning' : 'varování') : c.st === 'exc' ? (S.lang === 'en' ? 'OK-E' : 'OK-V') : c.st === 'info' ? 'info' : 'OK';
+    return el('span', { class: 'badge ' + (c.st === 'err' ? 'bad' : c.st === 'warn' ? 'warn' : c.st === 'info' ? '' : 'ok'), title: secTitle(labels[key], key, c) }, word);
   };
   return el('div', { class: 'card' }, el('div', { class: 'row' }, el('h3', null, 'Stav zabezpečení'),
     el('span', { class: 'right' }, err ? el('span', { class: 'badge bad' }, secCountText(err, 0)) : null,
@@ -1717,7 +1707,7 @@ PAGES.security = async (main, parts, params) => {
     for (const [k, v] of [['f', flt.f === 'all' ? '' : flt.f], ['t', flt.t], ['c', flt.c], ['g', flt.g], ['q', flt.q], ['s', flt.sort], ['d', flt.sort && flt.dir === 1 ? 'asc' : '']]) if (v) qs.set(k, v);
     history.replaceState(null, '', '#/security/' + tabKey + (qs.toString() ? '?' + qs.toString() : ''));
   };
-  const open = (r) => { location.hash = '#/zarizeni/' + r.id; };
+  const open = (r) => { S.nextTab = 'sec'; location.hash = '#/zarizeni/' + r.id; };
   const label = (k) => (checks.find((c) => c.key === k) || {}).label || k;
   const chip = (text, on, fn, count) => el('button', { class: 'flag' + (on ? ' on' : ''), onclick: fn }, text, count != null ? el('span', { class: 'count' }, ' ' + count) : null);
 
@@ -1813,7 +1803,7 @@ PAGES.security = async (main, parts, params) => {
         }))));
       holder.replaceChildren(rows.length ? table : el('div', { class: 'muted pad' }, 'Žádné zařízení neodpovídá filtru'),
         el('div', { class: 'sec-legend small muted' }, el('span', { class: 'sec-cell ok' }, 'v pořádku'), el('span', { class: 'sec-cell warn' }, 'varování'),
-          el('span', { class: 'sec-cell err' }, 'chyba'), el('span', { class: 'sec-cell none' }, 'nezjištěno'),
+          el('span', { class: 'sec-cell err' }, 'chyba'), el('span', { class: 'sec-cell info' }, 'informace'), el('span', { class: 'sec-cell none' }, 'nezjištěno'),
           el('span', { class: 'sec-cell exc' }, S.lang === 'en' ? 'OK-E exception' : 'OK-V výjimka')));
     };
     q.addEventListener('input', () => { flt.q = q.value; draw(); });
@@ -2044,7 +2034,7 @@ PAGES.nastaveni = async (main) => {
   const text = (key, label, hint, type) => { inputs[key] = el('input', { type: type || 'text', value: cfg[key] || '' }); return field(label, inputs[key], hint); };
   const check = (key, label) => { inputs[key] = el('input', { type: 'checkbox', checked: cfg[key] === '1' }); return el('label', { class: 'check' }, inputs[key], label); };
   const values = () => { const b = {}; Object.keys(inputs).forEach((k) => { b[k] = inputs[k].type === 'checkbox' ? (inputs[k].checked ? '1' : '0') : inputs[k].value; }); return b; };
-  const save = async () => { try { await api('PUT', '/api/settings', values()); toast('Nastavení uloženo', 'ok'); } catch (e) { fail(e); } };
+  const save = async () => { try { await api('PUT', '/api/settings', values()); if (inputs.timezone && inputs.timezone.value) S.me.tz = inputs.timezone.value; toast('Nastavení uloženo', 'ok'); } catch (e) { fail(e); } };
   pageHead(main, 'Nastavení', null, el('button', { class: 'primary', onclick: save }, 'Uložit nastavení'));
   inputs.scan_ranges = el('textarea', { value: cfg.scan_ranges || '', placeholder: '192.168.1.0/24\n10.0.5.10-10.0.5.80' });
   inputs.winrm_mode = el('select', null, el('option', { value: 'once' }, 'jen odeslat inventuru (nic neinstaluje)'),
@@ -2073,6 +2063,7 @@ PAGES.nastaveni = async (main) => {
   drawAgentVersions().catch(fail);
   main.append(
     el('div', { class: 'card' }, el('h2', null, 'Server'),
+      text('timezone', 'Časové pásmo pro zobrazení časů', 'Např. Europe/Prague. Časy se přepočítají včetně letního a zimního času.'),
       text('server_url', 'Adresa této aplikace v síti', 'Např. https://192.168.1.10:8580 – na tuto adresu posílají data agenti. Musí být dostupná ze všech počítačů.'),
       el('div', { class: 'form-grid' },
         text('offline_after_min', 'Považovat za offline po (min)', null, 'number'),

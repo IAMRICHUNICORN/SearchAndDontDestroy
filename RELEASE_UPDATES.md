@@ -7,6 +7,9 @@ Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CH
 
 (zatim nic)
 
+## Hotovo (implementovano, ceka na vydej) ve verzi 1.11.2 (bez noveho agenta, bez zmeny schematu)
+1. Stari ve dnech. 2. Mistni cas (Praha). 3. Security podle karty PC + nove kontroly. 4. Seznam Zarizeni: vychozi pohled, Instalace OS, klikani. 5. CZ/EN. 6. Oprava grafiky karty Agent.
+
 ## ToDo (pozdeji - az bude odladen zaklad; neimplementovat bez pokynu)
 - Moderni a mobilni rozhrani celeho programu: responzivni (automaticky podle sirky), menu do ikony a spodni lista na telefonu,
   karty misto tabulek (Zarizeni, Software, USB, Licence), filtry a pohledy jako priorita (cipy, panel filtru zespodu),

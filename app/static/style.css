@@ -288,11 +288,11 @@ table.plain th, table.plain td { text-align: left; padding: 4px 8px; border-bott
 .sec-sev { text-align: right; white-space: nowrap; }
 .sec-cell { display: block; border-radius: 6px; padding: 3px 6px; font-size: 12px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sec-cell.ok { background: var(--ok-soft); color: var(--ok); } .sec-cell.warn { background: var(--warn-soft); color: var(--warn); }
-.sec-cell.err { background: var(--bad-soft); color: var(--bad); } .sec-cell.none { background: var(--panel-2); color: var(--muted); }
+.sec-cell.err { background: var(--bad-soft); color: var(--bad); } .sec-cell.none { background: var(--panel-2); color: var(--muted); } .sec-cell.info { background: var(--panel-2); color: var(--text); }
 .sec-cell.exc { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .sec-cell.clickable { cursor: pointer; }
 .sec-matrix { padding: 0; overflow-x: auto; }
-.sec-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 720px; }
+.sec-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 900px; }
 .sec-table th { position: sticky; top: 0; background: var(--panel); text-align: center; font-weight: 600; font-size: 12px; padding: 8px 3px; border-bottom: 1px solid var(--line); color: var(--muted); cursor: pointer; white-space: normal; line-height: 1.2; vertical-align: bottom; }
 .sec-table th:first-child, .sec-table td:first-child { text-align: left; width: 21%; padding-left: 12px; position: sticky; left: 0; background: var(--panel); z-index: 1; }
 .sec-table td { padding: 5px 3px; border-bottom: 1px solid var(--line); text-align: center; }
