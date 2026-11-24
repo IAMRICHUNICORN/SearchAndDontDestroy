@@ -301,8 +301,8 @@ ENTITIES = {
             "os_age_days": ("Stáří instalace OS (dny)",
                             "CASE WHEN COALESCE(json_extract(d.details, '$.os.install_date'), '') <> '' "
                             "THEN CAST(julianday('now') - julianday(json_extract(d.details, '$.os.install_date')) AS INTEGER) END", "num"),
-            "monitor_age": ("Stáří nejstaršího monitoru (roky)",
-                            "(SELECT CAST(strftime('%Y', 'now') AS INTEGER) - MIN(m.year) FROM monitors m "
+            "monitor_age": ("Stáří nejstaršího monitoru (dny, od 1. 1. roku výroby)",
+                            "(SELECT CAST(julianday('now') - julianday(MIN(m.year) || '-01-01') AS INTEGER) FROM monitors m "
                             "WHERE m.device_id = d.id AND m.connected = 1 AND COALESCE(m.year, 0) > 1990)", "num"),
             "sw_removed_30d": ("Odinstalováno za 30 dní",
                                "(SELECT COUNT(*) FROM sw_changes c WHERE c.device_id = d.id AND c.action = 'odebráno' "

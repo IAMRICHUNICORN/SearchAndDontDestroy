@@ -213,7 +213,7 @@ function fmtMinutes(m) {
   return d + ' d' + (h ? ' ' + h + ' h' : '');
 }
 
-// stari: pod mesic "N D", od mesice "M M D D", od roku "R L M M D D" (CS: L M D, EN: Y M D); kalendarne, nulove casti se vynechaji
+// stari: vzdy jen pocet dni (CS "70 dní", EN "70 days")
 function daysSince(dateStr) {
   const t = Date.parse(String(dateStr).slice(0, 10));
   return isFinite(t) ? Math.round((Date.now() - t) / 86400000) : null;
@@ -226,7 +226,7 @@ function fmtAge(days) {
 }
 const fmtAgeFull = fmtAge;
 // sloupce, jejichz hodnota je pocet dni (zobrazi se jako stari; razeni a filtry zustavaji podle dni)
-const AGE_KEYS = new Set(['os_age_days', 'hotfix_age']);
+const AGE_KEYS = new Set(['os_age_days', 'hotfix_age', 'monitor_age']);
 function ageNode(days) {
   return el('span', { title: fmtAgeFull(days) }, fmtAge(days));
 }
@@ -537,6 +537,7 @@ function dataTable(opts) {
       next.splice(to, 0, next.splice(from, 1)[0]);
       st.columns = next;
       load();
+      if (opts.onLayout) opts.onLayout();
     };
     st.pageRows = data.rows;
     st.trs = [];
@@ -700,7 +701,7 @@ function dataTable(opts) {
   if (opts.adhoc) {
     tools.push(el('button', { onclick: () => {
       const p = columnPicker(entity, st.columns.length ? st.columns : S.schema.entities[entity].default);
-      modal('Sloupce', p.node, [{ label: 'Zrušit' }, { label: 'Použít', primary: true, onclick: () => { st.columns = p.get(); load(); } }]);
+      modal('Sloupce', p.node, [{ label: 'Zrušit' }, { label: 'Použít', primary: true, onclick: () => { st.columns = p.get(); load(); if (opts.onLayout) opts.onLayout(); } }]);
     } }, 'Sloupce'));
     tools.push(el('button', { onclick: () => {
       const f = filterBuilder(entity, st.filters);
@@ -722,6 +723,8 @@ function dataTable(opts) {
   return { node, reload: load, setFilters: (f) => { st.filters = f; st.page = 1; st.all = false; load(); },
     refreshGroups: () => { st.groups = null; load(); },
     selection: () => st.sel.size,
+    getLayout: () => ({ columns: st.columns.slice(), sort: st.sort, sortDir: st.sortDir }),
+    setLayout: (l) => { st.columns = (l.columns || []).slice(); st.sort = l.sort || ''; st.sortDir = l.sortDir || 'asc'; st.page = 1; load(); },
     setView: (v) => { st.filters = v.filters || []; st.columns = v.columns || []; st.sort = v.sort || ''; st.sortDir = v.sortDir || '';
       st.search = ''; search.value = ''; st.page = 1; st.all = false; st.sel.clear(); load(); } };
 }
@@ -1035,16 +1038,78 @@ PAGES.zarizeni = async (main, parts, params) => {
   let curTab = TABS[0];
   let curGroup = '';
   const flags = new Set();
-  const viewOf = () => ({
-    filters: curTab[1].concat(FLAGS.filter((f) => flags.has(f[0])).map((f) => f[3]),
-      curGroup ? [{ col: 'groups', op: 'eq', value: curGroup, tab: true }] : []),
-    columns: curTab[2], sort: curTab[3], sortDir: 'asc' });
-  const t = dataTable({ entity: 'devices', adhoc: true, compact: true, selectable: true, sections: SECTIONS, bulk: [bulkDelete('devices', 'zařízení')],
+  // ulozene pohledy sloupcu (na kartu a prohlizec): { vychozi: nazev|null, pohledy: [{ name, columns, sort, sortDir }] }
+  const LKEY = 'hwsw_layouts_' + (S.me && S.me.id);
+  const loadStore = () => { try { return JSON.parse(localStorage.getItem(LKEY) || '{}'); } catch (e) { return {}; } };
+  const saveStore = (o) => { try { localStorage.setItem(LKEY, JSON.stringify(o)); } catch (e) { toast('Pohled se nepodařilo uložit (prohlížeč to blokuje)', 'err'); } };
+  const tabStore = () => { const o = loadStore(); const x = o[curTab[0]] || {}; return { vychozi: x.vychozi || null, pohledy: Array.isArray(x.pohledy) ? x.pohledy : [] }; };
+  const putTabStore = (x) => { const o = loadStore(); o[curTab[0]] = x; saveStore(o); };
+  const factory = () => ({ columns: curTab[2].slice(), sort: curTab[3], sortDir: 'asc' });
+  const defaultLayout = () => { const x = tabStore(); return x.pohledy.find((v) => v.name === x.vychozi) || null; };
+  const viewOf = () => {
+    const l = defaultLayout() || factory();
+    const valid = S.schema.entities.devices.columns.map((c) => c.key);
+    const cols = (l.columns || []).filter((k) => valid.includes(k));
+    return {
+      filters: curTab[1].concat(FLAGS.filter((f) => flags.has(f[0])).map((f) => f[3]),
+        curGroup ? [{ col: 'groups', op: 'eq', value: curGroup, tab: true }] : []),
+      columns: cols.length ? cols : curTab[2], sort: l.sort || curTab[3], sortDir: l.sortDir || 'asc' };
+  };
+  const t = dataTable({ entity: 'devices', adhoc: true, compact: true, selectable: true, onLayout: () => { curLayoutName = '__mod'; drawLayouts(); }, sections: SECTIONS, bulk: [bulkDelete('devices', 'zařízení')],
     currentSection: () => (SECTIONS.includes(curTab[0]) ? curTab[0] : null),
     onChanged: () => { summary(); loadGroupSel(); },
     onRow: (r) => { location.hash = '#/zarizeni/' + r._id; },
     filters: viewOf().filters, columns: viewOf().columns, sort: 'agent_state', sortDir: 'asc' });
-  const applyView = () => t.setView(viewOf());
+  const applyView = () => { t.setView(viewOf()); curLayoutName = (defaultLayout() || {}).name || ''; drawLayouts(); };
+  let curLayoutName = (defaultLayout() || {}).name || '';
+  const layoutSel = el('select', { 'aria-label': 'Pohled sloupců', onchange: () => {
+    const x = tabStore();
+    if (layoutSel.value === '__mod') return;
+    const l = layoutSel.value === '' ? factory() : x.pohledy.find((v) => v.name === layoutSel.value);
+    if (l) { curLayoutName = layoutSel.value; t.setLayout(l); }
+    drawLayouts();
+  } });
+  function drawLayouts() {
+    const x = tabStore();
+    layoutSel.replaceChildren(el('option', { value: '' }, T('Základní pohled')),
+      ...x.pohledy.map((v) => el('option', { value: v.name }, (v.name === x.vychozi ? '★ ' : '') + v.name)),
+      curLayoutName === '__mod' ? el('option', { value: '__mod' }, T('(upraveno)')) : null);
+    layoutSel.value = (curLayoutName === '__mod' || x.pohledy.some((v) => v.name === curLayoutName)) ? curLayoutName : '';
+    const named = x.pohledy.some((v) => v.name === curLayoutName);
+    layoutBtns.setDef.disabled = !named || curLayoutName === x.vychozi;
+    layoutBtns.del.disabled = !named;
+  }
+  const layoutBtns = {
+    save: el('button', { onclick: () => {
+      const x = tabStore();
+      const name = el('input', { value: curLayoutName === '__mod' ? '' : curLayoutName, placeholder: 'Název pohledu', maxlength: '40' });
+      const def = el('input', { type: 'checkbox', checked: true });
+      modal('Uložit pohled sloupců', el('div', null,
+        field('Název pohledu', name),
+        el('label', { class: 'check' }, def, 'Nastavit jako výchozí (zobrazí se vždy po otevření karty)'),
+        el('div', { class: 'hint' }, 'Uloží se právě zobrazené sloupce, jejich pořadí a řazení. Pohled platí pro tuto kartu a tento prohlížeč. Stejný název přepíše existující pohled.')),
+      [{ label: 'Zrušit' }, { label: 'Uložit', primary: true, onclick: () => {
+        const nm = name.value.trim();
+        if (!nm) { toast('Zadejte název pohledu', 'err'); return false; }
+        const l = t.getLayout();
+        x.pohledy = x.pohledy.filter((v) => v.name !== nm).concat([{ name: nm, columns: l.columns, sort: l.sort, sortDir: l.sortDir }]);
+        if (def.checked) x.vychozi = nm;
+        putTabStore(x); curLayoutName = nm; drawLayouts(); toast('Pohled uložen', 'ok');
+      } }]);
+    } }, 'Uložit pohled…'),
+    setDef: el('button', { onclick: () => { const x = tabStore(); x.vychozi = curLayoutName; putTabStore(x); drawLayouts(); toast('Nastaveno jako výchozí', 'ok'); } }, '★ Výchozí'),
+    del: el('button', { class: 'danger', onclick: async () => {
+      if (!(await confirmBox('Smazat pohled „' + curLayoutName + '“?', 'Smazat'))) return;
+      const x = tabStore();
+      x.pohledy = x.pohledy.filter((v) => v.name !== curLayoutName);
+      if (x.vychozi === curLayoutName) x.vychozi = null;
+      putTabStore(x); curLayoutName = ''; t.setLayout(factory()); drawLayouts();
+    } }, 'Smazat pohled'),
+    reset: el('button', { onclick: () => { const l = defaultLayout() || factory(); curLayoutName = (defaultLayout() || {}).name || ''; t.setLayout(l); drawLayouts(); } }, 'Obnovit výchozí'),
+  };
+  const layoutBar = el('div', { class: 'quick' }, el('span', { class: 'muted small' }, 'Pohled sloupců:'), layoutSel,
+    layoutBtns.save, layoutBtns.setDef, layoutBtns.del, layoutBtns.reset);
+  drawLayouts();
   const bar = el('div', { class: 'tabs', role: 'tablist' });
   const counts = {};
   const tabButtons = TABS.map((tab) => {
@@ -1096,7 +1161,7 @@ PAGES.zarizeni = async (main, parts, params) => {
     el('span', { class: 'right' }, groupSel));
   extraBox.append(...flagButtons.filter((b) => !MAIN_FLAGS.has(b.dataset.flag)));
   const legend = el('div', { class: 'hint', style: 'margin-bottom:10px' });
-  main.append(bar, info, extraBox, legend, t.node);
+  main.append(bar, info, extraBox, layoutBar, legend, t.node);
   async function summary() {
     try {
       const c = await api('GET', '/api/devices-summary');
@@ -1304,6 +1369,8 @@ async function agentTab(box, d, id) {
       ['Sledované disky USB', (info.watch_drives || []).join(', ') || (info.usb_files ? 'žádný (nic není připojeno, nebo se nepodařilo zjistit písmeno disku)' : '')],
       ['Zachycené události souborů', info.file_events != null && info.usb_files ? info.file_events + (info.file_last ? ' · poslední ' + fmtDate(info.file_last) : '') : ''],
       ['Čtení z USB (audit Windows)', info.usb_audit ? 'zapnuto · stav: ' + (info.audit_state || '–') + ' · zachyceno ' + (info.audit_events || 0) : ''],
+      ['Diagnostika sledování souborů', info.usb_files ? 'syrové události ' + (info.file_raw != null ? info.file_raw : '–') + ' · chyby sledování ' + (info.file_errors != null ? info.file_errors : '–') : ''],
+      ['Audit Windows – Removable Storage', info.usb_audit ? (info.audit_policy || 'nezjištěno') + ' · událostí na USB discích ' + (info.audit_seen != null ? info.audit_seen : '–') : ''],
       ['Neúplné části inventury', (info.partial || []).join(', ')], ['Délka inventury', info.inv_ms ? Math.round(info.inv_ms / 1000) + ' s' : ''],
       ['Odchylka hodin', info.skew_s != null ? info.skew_s + ' s' : ''], ['PowerShell', info.ps]]),
       el('h3', { style: 'margin-top:18px' }, 'Historie chyb (uchovaná)'),

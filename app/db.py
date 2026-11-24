@@ -511,6 +511,30 @@ def full_backup_file():
     return out
 
 
+def _rollback(safety, old_secret):
+    """Vrati puvodni databazi z pojistne zalohy a puvodni klic (po nezdarene obnove)."""
+    fd, tmpdb = tempfile.mkstemp(suffix=".db", dir=BACKUP_DIR)
+    os.close(fd)
+    try:
+        with gzip.open(os.path.join(BACKUP_DIR, safety), "rb") as fi, open(tmpdb, "wb") as fo:
+            shutil.copyfileobj(fi, fo, 1024 * 1024)
+        src = sqlite3.connect(tmpdb)
+        dst = connect()
+        try:
+            src.backup(dst)
+        finally:
+            src.close()
+            dst.close()
+        if old_secret is not None:
+            with open(SECRET_PATH, "wb") as f:
+                f.write(old_secret)
+            os.chmod(SECRET_PATH, 0o600)
+    finally:
+        for extra in (tmpdb, tmpdb + "-wal", tmpdb + "-shm"):
+            if os.path.exists(extra):
+                os.remove(extra)
+
+
 def restore_from_file(upload_path):
     """Obnovi databazi ze souboru (.db, .db.gz nebo kompletni .tar.gz).
 
@@ -555,18 +579,45 @@ def restore_from_file(upload_path):
             if ver > len(MIGRATIONS):
                 raise ValueError("Záloha pochází z novější verze aplikace (schéma %d), "
                                  "tato verze umí nejvýše %d" % (ver, len(MIGRATIONS)))
-            with _maintenance:
-                safety = backup_db("pre-restore")
-                dst = connect()
-                try:
-                    src.backup(dst)
-                finally:
-                    dst.close()
-                if new_secret:
-                    with open(SECRET_PATH, "wb") as f:
-                        f.write(new_secret)
-                    os.chmod(SECRET_PATH, 0o600)
-                _migrate()
+            # 1) migrace se nejdriv vyzkousi na pracovni kopii: pri chybe zustane ostra databaze i klic beze zmeny
+            work = tmp + ".work"
+            try:
+                shutil.copyfile(tmp, work)
+                _migrate(work)
+                with _maintenance:
+                    safety = backup_db("pre-restore")
+                    old_secret = None
+                    if os.path.isfile(SECRET_PATH):
+                        with open(SECRET_PATH, "rb") as f:
+                            old_secret = f.read(4096)
+                        # puvodni klic patri k pojistne zaloze (bez nej by sla vratit databaze, ale ne hesla AD a WinRM)
+                        key_copy = os.path.join(BACKUP_DIR, safety + ".key")
+                        fd = os.open(key_copy, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                        with os.fdopen(fd, "wb") as f:
+                            f.write(old_secret)
+                    try:
+                        # 2) prepnuti: databaze a klic se meni spolu; pri chybe se vrati obe puvodni
+                        dst = connect()
+                        try:
+                            wsrc = sqlite3.connect(work)
+                            try:
+                                wsrc.backup(dst)
+                            finally:
+                                wsrc.close()
+                        finally:
+                            dst.close()
+                        if new_secret:
+                            with open(SECRET_PATH, "wb") as f:
+                                f.write(new_secret)
+                            os.chmod(SECRET_PATH, 0o600)
+                        _migrate()
+                    except BaseException:
+                        _rollback(safety, old_secret)
+                        raise
+            finally:
+                for extra in (work, work + "-wal", work + "-shm"):
+                    if os.path.exists(extra):
+                        os.remove(extra)
         finally:
             src.close()
         return safety
@@ -577,8 +628,8 @@ def restore_from_file(upload_path):
 
 # ----------------------------------------------------------------- migrace
 
-def _migrate():
-    conn = connect()
+def _migrate(path=None):
+    conn = connect(path)
     try:
         current = conn.execute("PRAGMA user_version").fetchone()[0]
         for idx in range(current, len(MIGRATIONS)):
@@ -634,6 +685,15 @@ def startup():
     finally:
         conn.close()
     _migrate()
+    # oprava zaznamu, ktere starsi verze oriznula uprostred (neplatny JSON shodil dotazy na cely seznam)
+    conn = connect()
+    try:
+        fixed = conn.execute("UPDATE devices SET details = '{\"_trimmed\": true}' "
+                             "WHERE details IS NOT NULL AND details <> '' AND json_valid(details) = 0").rowcount
+        if fixed:
+            msg += "; opraveno poškozených záznamů zařízení: %d (počkejte na další inventuru)" % fixed
+    finally:
+        conn.close()
     return msg
 
 

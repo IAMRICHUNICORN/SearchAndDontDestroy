@@ -46,5 +46,11 @@
   "date": "2026-11-21",
   "legacy": false,
   "notes": "Vzdálená plocha (RDP): hlásí skutečný stav (běží služba a poslouchá se na portu RDP, povolení ve firewallu, skutečně vynucené NLA), ne jen nastavení v registru nebo z GPO."
+ },
+ {
+  "version": "2.4.2",
+  "date": "2026-11-24",
+  "legacy": false,
+  "notes": "Grafika: skutečná velikost paměti (64bitová hodnota z registru ovladače, ne zkomolená hodnota nad 4 GB). USB soubory: diagnostika (počet událostí, chyby sledování, nastavení auditu Windows)."
  }
 ]

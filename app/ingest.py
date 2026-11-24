@@ -303,7 +303,7 @@ def store_agent_state(conn, dev_id, payload, ts):
         merged = {}
     if isinstance(info, dict):
         for k in ("elevated", "usb_watch", "partial", "inv_ms", "clock", "ps", "usb_files", "upd_state", "upd_target", "upd_at", "bad",
-                  "watch_drives", "file_events", "file_last", "audit_events", "audit_state", "usb_audit"):
+                  "watch_drives", "file_events", "file_last", "audit_events", "audit_state", "usb_audit", "file_raw", "file_errors", "audit_seen", "audit_policy"):
             if k in info:
                 merged[k] = info[k] if isinstance(info[k], (bool, int, float)) else (
                     [s(x, 60) for x in info[k]][:20] if isinstance(info[k], list) else s(info[k], 80))
@@ -406,6 +406,34 @@ def _sync_software(conn, dev_id, software, had_inventory):
         [(dev_id, k[0], k[1], v[0], v[1], v[2], v[3]) for k, v in sorted(new.items())])
 
 
+DETAILS_LIMIT = 400000
+
+
+def fit_details(details, limit=DETAILS_LIMIT):
+    """JSON detailu zarizeni vzdy platny: pri prekroceni limitu se zkracuji nejvetsi seznamy (nikdy se text neorezava)."""
+    text = json.dumps(details, ensure_ascii=False)
+    if len(text) <= limit:
+        return text
+    work = dict(details)
+    work["_trimmed"] = True
+    for _ in range(40):
+        sizes = {k: len(json.dumps(v, ensure_ascii=False)) for k, v in work.items() if k != "_trimmed"}
+        if not sizes:
+            break
+        big = max(sizes, key=sizes.get)
+        v = work[big]
+        if isinstance(v, list) and len(v) > 1:
+            work[big] = v[:len(v) // 2]
+        elif isinstance(v, dict) and v:
+            work[big] = {}
+        else:
+            work[big] = None
+        text = json.dumps(work, ensure_ascii=False)
+        if len(text) <= limit:
+            return text
+    return json.dumps({"_trimmed": True, "inv_agent": details.get("inv_agent", "?")}, ensure_ascii=False)
+
+
 def ingest_inventory(conn, payload):
     """Ulozi kompletni inventuru z agenta. Vraci (device_id, usb udalosti)."""
     hostname = short_host(payload.get("hostname"))
@@ -436,7 +464,7 @@ def ingest_inventory(conn, payload):
     # verze agenta, ktera tuto inventuru poslala: pri jeji zmene se zmeny softwaru nezapisuji (novy agent cte jine zdroje)
     inv_agent = s(payload.get("agent_version"), 20) or "?"
     details["inv_agent"] = inv_agent
-    details_json = json.dumps(details, ensure_ascii=False)[:400000]
+    details_json = fit_details(details)
 
     device = find_device(conn, hostname, mac)
     if device is None:

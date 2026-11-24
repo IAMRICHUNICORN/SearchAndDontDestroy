@@ -2,6 +2,23 @@
 
 Format verzi: MAJOR.MINOR.PATCH (napr. 1.2.3). Kazde vydani ma na GitHubu znacku `vMAJOR.MINOR.PATCH`.
 
+## 1.11.4
+Agent 2.4.2, bez změny schématu. (Zahrnuje i změny z 1.11.3.)
+- **Zařízení – uložené pohledy sloupců:** nad tabulkou je výběr pohledu. Aktuální sloupce, pořadí a řazení lze uložit pod názvem a označit jako **výchozí** (zobrazí se vždy po otevření karty). Pohledů může být víc, jde je smazat a tlačítko „Obnovit výchozí“ vrátí výchozí pohled. Platí pro kartu a prohlížeč.
+- **Grafika – skutečná paměť:** agent čte 64bitovou velikost z registru ovladače (`HardwareInformation.qwMemorySize`); dosavadní hodnota se nad 4 GB zkomolila.
+- **USB soubory – diagnostika:** karta Agent ukazuje počet syrových událostí a chyb sledování, nastavení auditu Windows „Removable Storage“ a počet událostí na USB discích.
+- **Stáří jen ve dnech:** i sloupec „Stáří nejstaršího monitoru“ je ve dnech (od 1. 1. roku výroby).
+
+## 1.11.3
+Bezpečnostní a provozní opravy podle revize kódu (bez nového agenta, bez změny schématu).
+- **Záloha NAS s certifikátem:** `backup-full.sh` ukládá i `data/tls` (soubor `tls.tar`, oprávnění jen pro vlastníka). Po obnově na prázdný NAS agenti serveru dál věří. README a `OBNOVA.txt` odpovídají skutečnosti.
+- **Bezpečná obnova ze zálohy:** migrace se nejdřív vyzkouší na kopii. Pojistná záloha obsahuje i původní šifrovací klíč (`…db.gz.key`) a při chybě se vrátí databáze i klíč.
+- **Poškozený záznam zařízení:** při příliš velké inventuře se zkracují seznamy, JSON se už neřeže uprostřed. Při startu se opraví záznamy poškozené starší verzí.
+- **Limit požadavků agenta:** skutečný počet bajtů se hlídá už při příjmu (8 MiB s platným tokenem, 64 KiB bez něj), ještě před načtením do paměti.
+- **Přístupový log bez tokenu:** adresa se zapisuje bez řetězce `?token=…`.
+- **Živé události:** relace a role se při spojení znovu ověřují (do 20 s); po odhlášení, vypršení nebo odebrání role proud skončí.
+- **První přihlášení:** výchozí heslo `admin` už neexistuje. Při nové instalaci se vygeneruje jednorázové heslo, které se jednou vypíše do logu kontejneru (nebo se použije `HWSW_ADMIN_PASSWORD`). Postup je v README. Stávající instalace beze změny.
+
 ## 1.11.2
 - **Stáří všude ve dnech** (česky „70 dní“, anglicky „70 days“) místo roky/měsíce/dny. Hodiny a minuty zůstávají.
 - **Časy podle místního času:** nové Nastavení → „Časové pásmo“ (výchozí Europe/Prague, včetně letního a zimního času). Použije se v celé aplikaci, v textech (např. „agent se nespojil od …“) i v exportu CSV. Nahrazuje zobrazení v UTC.

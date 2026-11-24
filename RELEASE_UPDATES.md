@@ -3,14 +3,26 @@
 Seznam zlepseni, ktera si uzivatel zapsal k dalsimu vydani. Pred buildem se cely seznam vypise, potom se implementuje.
 Vydani (commit, tag, push) az po slove "vydej". Hotove polozky se presunou do CHANGELOG.md.
 
-## Cekaji na dalsi vydani
+## Hotovo (implementovano, ceka na vydej) ve verzi 1.11.4 (agent 2.4.2): body 1-4; bod 5 odlozen, bod 6 vyresen uzivatelem
 
-(zatim nic)
+1. (schvaleno; po vyberu sloupcu lze vzdy ulozit jako vychozi) Zarizeni: vyber pohledu a sady sloupcu primo v seznamu; vice ulozenych pohledu; jeden oznacit jako VYCHOZI (zobrazi se vzdy po otevreni); tlacitko "Obnovit vychozi".
+2. USB: scan kopirovanych souboru (na USB i z USB) nefunguje - nejdriv diagnostika (watcher FileSystemWatcher, audit 4663), pak oprava.
+3. Stari vsude jen ve dnech (zbyva "Stari nejstarsiho monitoru (roky)" -> dny; zastarale komentare).
+4. Grafika: opravit skutecnou velikost pameti (AdapterRAM je 32bitove, max 4 GB) - cist z registru HardwareInformation.qwMemorySize (64bit), zaloha dedicated memory z dxdiag/GPU counters.
+5. ODLOZENO (uzivatel: neni nutne): verze ovladace grafiky + porovnani s netem.
+6. Mobil (uzivatel: v Brave na mobilu se stranka vubec neotevre; v emulaci mobilu pres HTTP funguje -> pravdepodobne certifikat/HTTPS, ceka na upresneni): do vyreseni mobilni verze vyradit kartovy rezim seznamu Zarizeni, aby stranka z mobilu fungovala (tabulka s vodorovnym posuvnikem).
 
-## Hotovo (implementovano, ceka na vydej) ve verzi 1.11.2 (bez noveho agenta, bez zmeny schematu)
-1. Stari ve dnech. 2. Mistni cas (Praha). 3. Security podle karty PC + nove kontroly. 4. Seznam Zarizeni: vychozi pohled, Instalace OS, klikani. 5. CZ/EN. 6. Oprava grafiky karty Agent.
+
+## Hotovo (implementovano, ceka na vydej) ve verzi 1.11.3 (revize kodu: body 3, 4, 5, 6, 8, 9 a log bez tokenu)
+
+## Planovano: 1.12.0 (agent 2.5.0, po 1.11.3)
+- Token pri stahovani agenta v hlavicce misto v adrese (starsi agenti zatim po stare).
+- Povinna kontrola SHA-256 pri aktualizaci agenta a kontrola vysledku icacls (opravneni slozky).
+- Overene TLS pro AD (az se AD zapne), vlastni certifikacni autorita.
 
 ## ToDo (pozdeji - az bude odladen zaklad; neimplementovat bez pokynu)
+- Klic zvlast pro kazde zarizeni (misto sdileneho tokenu) a podpis agenta (vyzaduje podpisovy certifikat a spravu klice).
+- Vykon (seznam a Security souhrn pri 300+ zarizenich): zmereno 0,03 s pri 300 zarizenich; skutecne zaznamy maji prumer 2,6 kB. Vratit se pri rustu.
 - Moderni a mobilni rozhrani celeho programu: responzivni (automaticky podle sirky), menu do ikony a spodni lista na telefonu,
   karty misto tabulek (Zarizeni, Software, USB, Licence), filtry a pohledy jako priorita (cipy, panel filtru zespodu),
   volitelne ikona na plochu (PWA). Mobilni podobu zatim ma jen sekce Security. Doporuceni: po castech, zacit seznamem Zarizeni.

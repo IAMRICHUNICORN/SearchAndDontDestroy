@@ -53,14 +53,28 @@ docker compose up -d --build
 
 ```bash
 ./scripts/build-image.sh amd64        # nebo arm64 podle procesoru QNAPu
-# vznikne dist/hwsw-monitor-1.11.2-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
-docker load -i hwsw-monitor-1.11.2-amd64.tar
+# vznikne dist/hwsw-monitor-1.11.4-amd64.tar -> přeneste na QNAP spolu s docker-compose.yml
+docker load -i hwsw-monitor-1.11.4-amd64.tar
 docker compose up -d --no-build
 ```
 
 Soubor `.tar` lze také importovat v Container Station (Images → Import) a kontejner vytvořit klikáním: port `8580`, svazek `/data` namapovaný na složku na QNAPu.
 
-Aplikace běží na `https://IP-QNAPu:8580` (vlastní certifikát – prohlížeč se poprvé zeptá na výjimku, viz [HTTPS](#https)). První přihlášení: **admin / admin** – aplikace si hned vynutí změnu hesla. (Vlastní počáteční heslo lze zadat proměnnou `HWSW_ADMIN_PASSWORD` v `docker-compose.yml`.)
+Aplikace běží na `https://IP-QNAPu:8580` (vlastní certifikát – prohlížeč se poprvé zeptá na výjimku, viz [HTTPS](#https)). První přihlášení: uživatel **admin** a jednorázové heslo, viz níže. Aplikace si hned vynutí jeho změnu.
+
+### První přihlášení (nová instalace)
+
+Výchozí heslo `admin` už neexistuje. Při úplně prvním startu (prázdná složka `data`) vznikne účet `admin`:
+
+1. **Bez nastavení** aplikace vygeneruje náhodné jednorázové heslo a **jednou** ho vypíše do logu kontejneru. Zobrazíte ho příkazem na QNAPu (SSH):
+   ```bash
+   docker logs hwsw-monitor 2>&1 | grep -A1 "Jednorázové heslo"
+   ```
+   Nebo v Container Station: *Containers → hwsw-monitor → Logs*. Heslo přepište při prvním přihlášení; po změně už z logu nic nezjistíte.
+2. **Vlastní počáteční heslo**: odkomentujte v `docker-compose.yml` řádek `HWSW_ADMIN_PASSWORD: "…"` před prvním spuštěním. Heslo se použije jen při založení účtu a po prvním přihlášení se stejně musí změnit.
+3. **Nestihli jste heslo zachytit** (kontejner už běžel, log se smazal): smažte složku `data` (je-li instalace nová a prázdná) a spusťte znovu, nebo nastavte `HWSW_ADMIN_PASSWORD` a spusťte s prázdnou složkou `data`.
+
+Stávající instalace se nezmění, účty a hesla zůstávají.
 
 ## První nastavení
 
@@ -87,13 +101,13 @@ Aplikace běží rovnou na HTTPS. Při prvním startu si vytvoří vlastní cert
 - **Nový certifikát**: smažte `data/tls/` a restartujte. Agenty je pak nutné nainstalovat znovu.
 - **Za reverzní proxy**, která šifruje sama, lze vlastní HTTPS vypnout proměnnou `HWSW_TLS: "off"`.
 
-Složka `data/tls/` není součástí kompletní zálohy stahované z webu; zálohuje ji skript `backup-full.sh` (celá složka `data`). Bez ní vznikne po obnově nový certifikát.
+Složka `data/tls/` není součástí zálohy stahované z webu (stránka Zálohy). Zálohuje ji skript `backup-full.sh`: vedle `data.tar.gz` (databáze a klíč pro hesla) uloží soubor `tls.tar` s certifikátem a jeho soukromým klíčem. Oba soubory jsou tajné (oprávnění jen pro vlastníka), uchovejte je na bezpečném místě. Při obnově (návod `OBNOVA.txt` ve složce zálohy) se `tls.tar` rozbalí do `data/`; bez něj by vznikl nový certifikát a všechny agenty by bylo nutné nainstalovat znovu.
 
 ## Aktualizace
 
 ```bash
 ./scripts/update.sh                                   # sestaví novou verzi ze zdrojů
-./scripts/update.sh hwsw-monitor-1.11.2-amd64.tar      # nebo nahraje hotový image
+./scripts/update.sh hwsw-monitor-1.11.4-amd64.tar      # nebo nahraje hotový image
 ```
 
 Co se děje s databází:
@@ -143,11 +157,11 @@ Rozhraní je česky a anglicky (přepínač **CZ / EN** v levém menu a na přih
 | Ruční | web → Zálohy → *Zálohovat databázi teď* | databáze |
 | Před aktualizací / před obnovou | automaticky | databáze; nemažou se samy |
 | Kompletní záloha dat | web → Zálohy → *Stáhnout kompletní zálohu* | databáze + šifrovací klíč (`.tar.gz`) |
-| Celý Docker | `./scripts/backup-full.sh /share/Backup/hwsw` | image (`docker save`) + data + `docker-compose.yml` + návod `OBNOVA.txt` |
+| Celý Docker | `./scripts/backup-full.sh /share/Backup/hwsw` | image (`docker save`) + data (`data.tar.gz`: databáze a klíč) + certifikát (`tls.tar`) + `docker-compose.yml` + návod `OBNOVA.txt` |
 
 Všechny zálohy se dělají za běhu přes SQLite backup API (konzistentní snímek, žádné kopírování otevřeného souboru).
 
-**Obnova**: web → Zálohy → *Obnovit* u vybrané zálohy, nebo *Obnovit ze souboru* (`.db`, `.db.gz` i kompletní `.tar.gz`). Před každou obnovou se současný stav sám zazálohuje.
+**Obnova**: web → Zálohy → *Obnovit* u vybrané zálohy, nebo *Obnovit ze souboru* (`.db`, `.db.gz` i kompletní `.tar.gz`). Před každou obnovou se současný stav sám zazálohuje (databáze i původní šifrovací klíč, soubor `…db.gz.key` vedle zálohy). Obnova se nejdřív vyzkouší na kopii; když cokoli selže, vrátí se původní databáze i klíč.
 
 **Obnova na novém stroji** ze zálohy celého Dockeru – viz `OBNOVA.txt` v záloze (načíst image, rozbalit data, `docker compose up -d`).
 

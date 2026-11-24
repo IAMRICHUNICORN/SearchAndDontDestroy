@@ -33,6 +33,11 @@ $script:AuditEnabled = $false
 $script:AuditLast = (Get-Date).AddMinutes(-1)
 $script:AuditState = ''
 $script:AuditEvents = 0
+$script:FileRaw = 0
+$script:FileErrors = 0
+$script:AuditSeen = 0
+$script:AuditPolicy = ''
+$script:AuditPolicyAt = [DateTime]::MinValue
 $script:FileEvents = 0
 $script:FileLast = ''
 $ErrorActionPreference = 'Continue'
@@ -125,6 +130,10 @@ function Get-AgentInfo {
         file_last = [string]$script:FileLast
         audit_events = [int]$script:AuditEvents
         audit_state = [string]$script:AuditState
+        file_raw = [int]$script:FileRaw
+        file_errors = [int]$script:FileErrors
+        audit_seen = [int]$script:AuditSeen
+        audit_policy = [string]$script:AuditPolicy
         partial = @($script:Partial)
         inv_ms = [int]$script:InvMs
         clock = ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))
@@ -580,6 +589,26 @@ function Get-Software {
     return ,@($list)
 }
 
+function Get-GpuRegistryMemory($Gpu) {
+    # dedikovana pamet grafiky v MB z HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-...}\NNNN (HardwareInformation.qwMemorySize);
+    # radek se hleda podle shodneho popisu (DriverDesc) a verze ovladace; 0 = nezjisteno
+    try {
+        $base = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}'
+        $best = 0
+        foreach ($k in @(Get-ChildItem -Path $base -ErrorAction Stop | Where-Object { $_.PSChildName -match '^\d{4}$' })) {
+            $p = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue
+            if (-not $p) { continue }
+            if ([string]$p.DriverDesc -ne [string]$Gpu.Name) { continue }
+            $q = $p.'HardwareInformation.qwMemorySize'
+            if ($null -eq $q) { $q = $p.'HardwareInformation.MemorySize' }
+            if ($q -is [byte[]]) { $q = [BitConverter]::ToUInt64(($q + (New-Object byte[] 8))[0..7], 0) }
+            $mb = [math]::Round([double]$q / 1MB)
+            if ($mb -gt $best) { $best = $mb }
+        }
+        return $best
+    } catch { return 0 }
+}
+
 function Get-RemoteInfo {
     # skutecny stav vzdalene plochy (RDP): bezi sluzba a skutecne se posloucha na portu RDP? (ne jen nastaveni v registru / GPO)
     # a vzdaleneho PowerShellu (WinRM)
@@ -1016,8 +1045,11 @@ function Get-Inventory {
     }
     $gpus = @()
     foreach ($g in (Wmi 'Win32_VideoController')) {
+        # AdapterRAM je 32bitove (nad 4 GB se zkomoli); skutecna pamet je v registru ovladace jako 64bitove qwMemorySize
         $vram = 0
         try { $vram = [math]::Round([double]$g.AdapterRAM / 1MB) } catch {}
+        $reg = Get-GpuRegistryMemory $g
+        if ($reg -gt 0) { $vram = $reg }
         $gpus += @{ name = (Text $g.Name); vram_mb = $vram; driver = (Text $g.DriverVersion) }
     }
     $nics = @(); $primaryIp = ''; $primaryMac = ''
@@ -1295,7 +1327,7 @@ function Update-UsbWatchers($Usb) {
             $fsw.InternalBufferSize = 65536
             $fsw.NotifyFilter = [IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Size'
             $ids = @()
-            foreach ($ev in @('Created', 'Changed', 'Renamed')) {
+            foreach ($ev in @('Created', 'Changed', 'Renamed', 'Error')) {
                 $sid = 'HWSWFile' + $ev + $drive.Replace(':', '')
                 Register-ObjectEvent -InputObject $fsw -EventName $ev -SourceIdentifier $sid | Out-Null
                 $ids += $sid
@@ -1315,6 +1347,8 @@ function Receive-UsbFileEvents {
         $n++
         try {
             $a = $e.SourceEventArgs
+            if ($e.SourceIdentifier -like 'HWSWFileError*') { $script:FileErrors++; Remove-Event -EventIdentifier $e.EventIdentifier -ErrorAction SilentlyContinue; continue }
+            $script:FileRaw++
             $path = [string]$a.FullPath
             $type = [string]$a.ChangeType
             Remove-Event -EventIdentifier $e.EventIdentifier -ErrorAction SilentlyContinue
@@ -1335,9 +1369,21 @@ function Receive-UsbFileEvents {
     }
 }
 
+function Get-AuditPolicyText {
+    # nastaveni auditu 'Removable Storage' (GUID je stejny v kazdem jazyce); text sloupce Inclusion Setting
+    if (((Get-Date) - $script:AuditPolicyAt).TotalMinutes -lt 30 -and $script:AuditPolicy) { return }
+    $script:AuditPolicyAt = Get-Date
+    try {
+        $out = @(& auditpol.exe /get '/subcategory:{0CCE9245-69AE-11D9-BED3-505054503030}' /r 2>$null)
+        $rows = @($out | Where-Object { $_ -and $_ -notmatch '^Machine Name' } | ConvertFrom-Csv -Header a, b, c, d, e, f -ErrorAction Stop)
+        if ($rows.Count -gt 1) { $script:AuditPolicy = [string]$rows[$rows.Count - 1].e } else { $script:AuditPolicy = 'nezjisteno' }
+    } catch { $script:AuditPolicy = 'nezjisteno' }
+}
+
 function Receive-UsbAudit {
     # soubory Z USB: cteni souboru na vymennem disku z auditu Windows (udalost 4663, GPO "Audit Removable Storage")
     if (-not $script:AuditEnabled -or $script:DriveMap.Count -eq 0) { return }
+    try { Get-AuditPolicyText } catch {}
     $since = $script:AuditLast.AddSeconds(-5)
     $script:AuditLast = Get-Date
     $evs = @()
@@ -1358,6 +1404,7 @@ function Receive-UsbAudit {
             if ($path.Length -lt 4 -or [string]$f['ObjectType'] -ne 'File') { continue }
             $drive = $path.Substring(0, 2).ToUpper()
             if (-not $script:DriveMap.ContainsKey($drive)) { continue }
+            $script:AuditSeen++
             if ($path -like '*System Volume Information*' -or $path -like '*$RECYCLE.BIN*') { continue }
             $mask = 0
             try { $mask = [Convert]::ToInt32(([string]$f['AccessMask']).Replace('0x', ''), 16) } catch {}

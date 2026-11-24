@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import secrets
@@ -72,16 +73,97 @@ DEFAULT_VIEWS = [
 ]
 
 
+class _NoQueryInAccessLog(logging.Filter):
+    """Do pristupoveho logu se nezapisuje retezec dotazu (obsahuje ?token= pri stahovani agenta)."""
+    def filter(self, record):
+        try:
+            args = list(record.args)
+            if len(args) >= 3 and isinstance(args[2], str) and "?" in args[2]:
+                args[2] = args[2].split("?", 1)[0] + "?…"
+                record.args = tuple(args)
+        except Exception:
+            pass
+        return True
+
+
+class AgentBodyLimit:
+    """Omezuje velikost tela pozadavku agentu podle skutecne prijatych bajtu, jeste pred nactenim JSON do pameti.
+    S platnym tokenem 8 MiB, bez nej jen 64 KiB (odmitnuty pozadavek se zaznamena az v obsluze)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or not scope["path"].startswith("/api/agent/"):
+            return await self.app(scope, receive, send)
+        headers = dict(scope["headers"])
+        try:
+            real = await run_in_threadpool(_agent_token)
+        except Exception:
+            real = ""
+        given = headers.get(b"x-agent-token", b"")
+        ok = bool(real) and hmac.compare_digest(given, real.encode())
+        limit = 8 * 1024 * 1024 if ok else 64 * 1024
+        try:
+            declared = int(headers.get(b"content-length") or 0)
+        except ValueError:
+            declared = 0
+        started = {"v": False}
+
+        async def too_big():
+            body = b'{"detail":"P\xc5\x99\xc3\xadli\xc5\xa1 velk\xc3\xa1 data"}'
+            await send({"type": "http.response.start", "status": 413,
+                        "headers": [(b"content-type", b"application/json; charset=utf-8"), (b"content-length", str(len(body)).encode())]})
+            await send({"type": "http.response.body", "body": body})
+
+        if declared > limit:
+            return await too_big()
+        seen = {"n": 0}
+
+        class _Over(BaseException):
+            pass
+
+        async def counting_receive():
+            msg = await receive()
+            if msg["type"] == "http.request":
+                seen["n"] += len(msg.get("body", b""))
+                if seen["n"] > limit:
+                    raise _Over()
+            return msg
+
+        async def tracking_send(msg):
+            if msg["type"] == "http.response.start":
+                started["v"] = True
+            await send(msg)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except _Over:
+            if not started["v"]:
+                await too_big()
+
+
+app.add_middleware(AgentBodyLimit)
+
+
 @app.on_event("startup")
 def on_startup():
+    logging.getLogger("uvicorn.access").addFilter(_NoQueryInAccessLog())
     info = db.startup()
     print("HWSW Monitor %s - %s" % (db.APP_VERSION, info), flush=True)
     with db.db() as conn:
         if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-            password = os.environ.get("HWSW_ADMIN_PASSWORD") or "admin"
+            password = os.environ.get("HWSW_ADMIN_PASSWORD")
+            generated = not password
+            if generated:
+                password = secrets.token_urlsafe(12)
             conn.execute("INSERT INTO users(username, full_name, pw_hash, role, must_change) VALUES(?,?,?,?,1)",
                          ("admin", "Administrátor", hash_pw(password), "admin"))
-            print("Vytvořen účet 'admin' - při prvním přihlášení je nutné změnit heslo.", flush=True)
+            if generated:
+                print("=" * 60 + "\nVytvořen účet 'admin'. Jednorázové heslo: %s\n"
+                      "(zobrazí se jen teď; při prvním přihlášení je nutné ho změnit)\n" % password + "=" * 60, flush=True)
+            else:
+                print("Vytvořen účet 'admin' s heslem z HWSW_ADMIN_PASSWORD - při prvním přihlášení je nutné ho změnit.", flush=True)
             for pos, (name, desc, entity, cols, flt, sort, direction) in enumerate(DEFAULT_VIEWS):
                 conn.execute("INSERT INTO views(name, description, entity, columns, filters, sort, sort_dir, "
                              "shared_all, position) VALUES(?,?,?,?,?,?,?,0,?)",
@@ -1392,15 +1474,33 @@ async def events(request: Request):
     admin = user["role"] == "admin"
     queue = bus.subscribe()
 
+    async def still_valid():
+        """Relace i role se znovu overuji behem spojeni: po odhlaseni, vyprseni nebo odebrani role proud konci."""
+        nonlocal admin
+        try:
+            now_user = await run_in_threadpool(current_user, request)
+        except HTTPException:
+            return False
+        admin = now_user["role"] == "admin"
+        return True
+
     async def stream():
         try:
             yield ": ok\n\n"
+            checked = time.monotonic()
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), 20)
                 except asyncio.TimeoutError:
+                    if not await still_valid():
+                        return
+                    checked = time.monotonic()
                     yield ": ping\n\n"
                     continue
+                if time.monotonic() - checked > 20:
+                    if not await still_valid():
+                        return
+                    checked = time.monotonic()
                 if not admin:
                     event = {"type": event.get("type")}
                 yield "data: %s\n\n" % json.dumps(event, ensure_ascii=False)

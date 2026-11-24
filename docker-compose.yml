@@ -1,7 +1,7 @@
 # HWSW Monitor - nasazeni na QNAP (Container Station) nebo jakykoli Docker.
 services:
   hwsw:
-    image: hwsw-monitor:1.11.2
+    image: hwsw-monitor:1.11.4
     build: .
     container_name: hwsw-monitor
     restart: unless-stopped
@@ -9,7 +9,8 @@ services:
       - "8580:8580"          # QNAP sam pouziva 8080/443, proto 8580
     environment:
       TZ: Europe/Prague
-      # Heslo uctu "admin" pri uplne prvnim startu (jinak "admin"; zmena je pri prihlaseni povinna).
+      # Heslo uctu "admin" pri uplne prvnim startu. Bez nastaveni se vygeneruje nahodne jednorazove heslo a jednou se vypise do logu
+      # (docker logs hwsw-monitor). Zmena hesla je pri prvnim prihlaseni povinna.
       # HWSW_ADMIN_PASSWORD: "zmente-me"
       # Aplikace bezi na HTTPS s vlastnim certifikatem (vznikne pri prvnim startu v ./data/tls).
       # Jmena a adresy, pod kterymi ji budete otevirat - zapisou se do certifikatu pri jeho vytvoreni:
